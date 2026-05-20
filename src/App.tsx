@@ -1866,6 +1866,7 @@ function App() {
     const next = {
       ...notificationConsentDraft,
       enabled: true,
+      scheduleEnabled: true,
       consentStatus: "accepted" as const,
       consentLastPromptedAt: now,
       consentAcceptedAt: now,
@@ -4387,13 +4388,16 @@ function NotificationsScreen({
                     preparationDay,
                     preparationTime,
                     morningTime,
-                    scheduleEnabled,
+                    scheduleEnabled: true,
                     scheduleDay,
                     scheduleTime,
                   });
                   return;
                 }
-                void saveNotificationPreferences({ enabled: event.target.checked });
+                void saveNotificationPreferences({
+                  enabled: event.target.checked,
+                  scheduleEnabled: event.target.checked ? true : scheduleEnabled,
+                });
               }}
               type="checkbox"
             />
