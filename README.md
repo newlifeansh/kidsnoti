@@ -1,45 +1,42 @@
-# 키즈노티 (KidsNoti)
+# kids-notice-ait
 
-알림장을 올리면 준비물과 일정을 알아서 정리해주는 서비스입니다.
-
-## 주요 기능
-
-- 📸 **알림장 사진 인식**: AI가 알림장 사진을 자동으로 분석합니다
-- 📝 **할 일 정리**: 아이별로 준비물, 숙제, 제출물을 체계적으로 관리합니다
-- 📅 **캘린더 연동**: 중요한 일정은 구글 캘린더에 자동으로 저장됩니다
-- 👨‍👩‍👧‍👦 **다자녀 지원**: 여러 아이의 알림장을 한 곳에서 관리할 수 있습니다
-
-## 기술 스택
-
-- React 18
-- TypeScript
-- Tailwind CSS v4
-- Vite
-- Lucide Icons
+Apps in Toss 프로젝트입니다.
 
 ## 시작하기
 
 ```bash
-# 의존성 설치
-pnpm install
-
-# 개발 서버 실행
-pnpm dev
-
-# 빌드
-pnpm build
+npm run dev
 ```
 
-## 화면 구성
+## 로컬 Mock API
 
-- 온보딩: 서비스 소개 및 시작
-- 홈: 오늘 할 일과 다가오는 일정 확인
-- 알림장 업로드: 사진 선택 및 분석 요청
-- AI 분석: 단계별 분석 진행 상태
-- 결과 확인: AI가 정리한 일정과 할 일 확인
-- 할 일 목록: 아이별 체크리스트 관리
-- 아이 관리: 아이 정보 및 설정
+```bash
+npm run api:mock
+```
 
-## 라이선스
+프론트는 개발 환경에서 기본적으로 `http://localhost:8080` mock API를 바라봅니다.
 
-MIT
+## Supabase
+
+Supabase 전환 기준 문서는 아래 파일을 확인하세요.
+
+- `docs/supabase-setup.md`
+- `docs/supabase-model.md`
+- `supabase/schema.sql`
+
+## 배포하기
+
+- 앱인토스 배포 API 키는 [앱인토스 콘솔](https://apps-in-toss.toss.im/) > 워크스페이스 > API 키 > 콘솔 API 키 에서 발급받을 수 있어요.
+
+```bash
+npm run build
+npm run deploy
+```
+
+## 유용한 링크
+
+- [앱인토스 콘솔](https://apps-in-toss.toss.im/)
+- [앱인토스 개발자센터](https://developers-apps-in-toss.toss.im/)
+- [앱인토스 개발자 커뮤니티](https://techchat-apps-in-toss.toss.im/)
+
+AI를 사용하시는 경우 [여기](https://developers-apps-in-toss.toss.im/development/llms.html)를 확인해보세요.
