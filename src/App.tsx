@@ -1,4 +1,3 @@
-import { Top } from "@toss/tds-mobile";
 import { appLogin, closeView, setIosSwipeGestureEnabled, TossAds } from "@apps-in-toss/web-framework";
 import {
   AlertCircle,
@@ -82,6 +81,14 @@ type Screen =
   | "bug-events";
 
 let hasInitializedTossAds = false;
+
+function canUseTossAds() {
+  try {
+    return TossAds.initialize.isSupported() && TossAds.attachBanner.isSupported();
+  } catch {
+    return false;
+  }
+}
 
 interface Child {
   id: string;
@@ -2317,14 +2324,10 @@ function App() {
       {showChrome && (
         <header className={isCompactHomeHeader ? "app-header compact" : "app-header"}>
           {isCompactHomeHeader ? null : (
-            <Top
-              title={<Top.TitleParagraph size={22}>알림장쏙</Top.TitleParagraph>}
-              subtitleBottom={
-                <Top.SubtitleParagraph size={15}>
-                  사진 또는 파일을 업로드하여 한번에 알림장을 정리해요.
-                </Top.SubtitleParagraph>
-              }
-            />
+            <div className="app-header-copy">
+              <h1>알림장쏙</h1>
+              <p>사진 또는 파일을 업로드하여 한번에 알림장을 정리해요.</p>
+            </div>
           )}
           <button
             aria-label="설정"
@@ -5326,7 +5329,7 @@ function TossAdBanner({
       return;
     }
 
-    if (!TossAds.initialize.isSupported() || !TossAds.attachBanner.isSupported()) {
+    if (!canUseTossAds()) {
       setStatus("hidden");
       return;
     }
