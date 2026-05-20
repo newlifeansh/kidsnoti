@@ -2267,6 +2267,7 @@ function App() {
   };
 
   const isCompactHomeHeader = effectiveScreen === "home";
+  const showSettingsButton = effectiveScreen !== "settings";
 
   return (
     <div className="app-shell">
@@ -2278,14 +2279,16 @@ function App() {
               <p>사진 또는 파일을 업로드하여 한번에 알림장을 정리해요.</p>
             </div>
           )}
-          <button
-            aria-label="설정"
-            className="top-settings-button"
-            onClick={() => setScreen("settings")}
-            type="button"
-          >
-            <SettingsTabIcon size={22} />
-          </button>
+          {showSettingsButton ? (
+            <button
+              aria-label="설정"
+              className="top-settings-button"
+              onClick={() => setScreen("settings")}
+              type="button"
+            >
+              <SettingsTabIcon size={22} />
+            </button>
+          ) : null}
         </header>
       )}
 
