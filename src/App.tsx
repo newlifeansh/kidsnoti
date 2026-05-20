@@ -328,9 +328,6 @@ const inviteDisplayNameOptions = [
   "아내",
   "할머니",
   "할아버지",
-  "엄마",
-  "아빠",
-  "보호자",
 ] as const;
 
 function loadPersistedAppState(): PersistedAppState {
