@@ -528,10 +528,14 @@
 - 중복 발송 방지 로그가 잘 쌓이는지
 - 아침/저녁 시간대 계산이 의도대로인지
 
-### 6. 광고 실연동 여부 결정
+### 6. adbanner connection
 
-- 현재는 placeholder
-- 실제 Toss 광고 그룹 ID 연결 여부 결정 필요
+- 홈/업로드 화면의 광고 영역은 placeholder가 아니라 Apps in Toss `TossAds.attachBanner()` 실연동으로 변경 완료
+- 로컬 브라우저에서는 토스 광고 브릿지가 없으면 자동 숨김 처리
+- 앱인토스 런타임에서는 `TossAds.initialize()` 후 배너 광고 그룹 ID로 attach
+- 홈 배너 ID: `ait.v2.live.3a4c8b61b70145bf`
+- 업로드 화면 배너 ID: `ait.v2.live.3dbb4427bbf84790`
+- 새 앱인토스 업로드 번들: `kidsnoti.ait`
 
 ### 7. 운영자 admin 별도 과제 분리
 
