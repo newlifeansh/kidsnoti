@@ -773,7 +773,7 @@
 
 .assistant-home {
   gap: 18px;
-  padding-top: 72px;
+  padding-top: 15px;
 }
 
 .child-rail {
@@ -867,6 +867,35 @@
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.44);
   content: "";
+}
+
+.hero-settings-button {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.64);
+  color: #334155;
+  cursor: pointer;
+  box-shadow:
+    0 10px 24px rgba(15, 23, 42, 0.08),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(10px);
+}
+
+.hero-settings-button:focus,
+.hero-settings-button:focus-visible {
+  outline: 0;
+  box-shadow:
+    0 10px 24px rgba(15, 23, 42, 0.08),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.72);
 }
 
 .hero-copy {

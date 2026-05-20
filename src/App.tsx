@@ -2267,7 +2267,7 @@ function App() {
   };
 
   const isCompactHomeHeader = effectiveScreen === "home";
-  const showSettingsButton = effectiveScreen !== "settings";
+  const showSettingsButton = effectiveScreen !== "home" && effectiveScreen !== "settings";
 
   return (
     <div className="app-shell">
@@ -2708,6 +2708,14 @@ function HomeScreen({
       </div>
 
       <section className="hero-card">
+        <button
+          aria-label="설정"
+          className="hero-settings-button"
+          onClick={() => onNavigate("settings")}
+          type="button"
+        >
+          <SettingsTabIcon size={20} />
+        </button>
         <div className="hero-copy">
           <p className="eyebrow">놓치지 마세요!</p>
           <h1>{heroMessage}</h1>
