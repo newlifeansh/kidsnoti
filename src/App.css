@@ -5,6 +5,7 @@
 }
 
 .app-shell {
+  position: relative;
   min-height: 100vh;
   color: #111827;
   background: #ffffff;
@@ -21,6 +22,18 @@
   border-bottom: 1px solid #e5e7eb;
   background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(14px);
+}
+
+.app-header.compact {
+  position: absolute;
+  right: 0;
+  left: 0;
+  border-bottom: 0;
+  min-height: 0;
+  padding: 16px 20px 0;
+  background: transparent;
+  backdrop-filter: none;
+  pointer-events: none;
 }
 
 .top-settings-button {
@@ -43,6 +56,14 @@
   box-shadow: none;
 }
 
+.app-header.compact .top-settings-button {
+  position: static;
+  justify-self: end;
+  background: transparent;
+  box-shadow: none;
+  pointer-events: auto;
+}
+
 .top-settings-button:hover,
 .top-settings-button:active,
 .top-settings-button:focus,
@@ -63,6 +84,10 @@
   background:
     radial-gradient(circle at 18% 0%, rgba(191, 219, 254, 0.55), transparent 34%),
     linear-gradient(180deg, #f8fafc 0%, #f9fafb 100%);
+}
+
+.screen.with-nav.compact-header {
+  min-height: 100vh;
 }
 
 .page-stack,
@@ -725,6 +750,7 @@
 
 .assistant-home {
   gap: 18px;
+  padding-top: 8px;
 }
 
 .child-rail {
@@ -732,6 +758,12 @@
   gap: 10px;
   overflow-x: auto;
   padding: 4px 0 2px;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.child-rail::-webkit-scrollbar {
+  display: none;
 }
 
 .child-rail-card,
@@ -1667,6 +1699,16 @@
   color: #6b7280;
   font-size: 14px;
   text-align: center;
+}
+
+.toss-ad-banner {
+  width: 100%;
+  min-height: 104px;
+  overflow: hidden;
+}
+
+.toss-ad-banner.hidden {
+  display: none;
 }
 
 .toss-ad-placeholder {
@@ -2924,6 +2966,35 @@
   font: inherit;
   font-size: 16px;
   font-weight: 900;
+}
+
+.exit-dialog {
+  width: min(100%, 336px);
+  border-radius: 28px;
+  padding: 24px 20px 20px;
+  background: #ffffff;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.2);
+  text-align: center;
+}
+
+.exit-dialog h2 {
+  margin: 0;
+  color: #111827;
+  font-size: 20px;
+  line-height: 1.35;
+}
+
+.exit-dialog p {
+  margin: 8px 0 18px;
+  color: #64748b;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.exit-dialog-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 @keyframes loading-slide {

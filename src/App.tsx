@@ -1,5 +1,5 @@
 import { Top } from "@toss/tds-mobile";
-import { appLogin } from "@apps-in-toss/web-framework";
+import { appLogin, closeView, setIosSwipeGestureEnabled, TossAds } from "@apps-in-toss/web-framework";
 import {
   AlertCircle,
   CheckCircle2,
@@ -80,6 +80,8 @@ type Screen =
   | "settings"
   | "notifications"
   | "bug-events";
+
+let hasInitializedTossAds = false;
 
 interface Child {
   id: string;
@@ -175,6 +177,13 @@ interface LocalNotificationPreferenceState {
 }
 
 type NotificationConsentPromptSource = "post-save" | "settings-toggle";
+
+interface AppHistoryState {
+  __alimjangssok: true;
+  kind: "sentinel" | "screen";
+  screen?: Screen;
+  index?: number;
+}
 
 interface CuteIconProps {
   size?: number;
@@ -932,12 +941,22 @@ function App() {
   const [isSubmittingNotificationConsent, setIsSubmittingNotificationConsent] = useState(false);
   const [notificationConsentMessage, setNotificationConsentMessage] = useState<string | null>(null);
   const [isConnectingTossLogin, setIsConnectingTossLogin] = useState(false);
+  const [isExitConfirmOpen, setIsExitConfirmOpen] = useState(false);
   const hasPersistedChildren = persistedState.children.length > 0;
   const shouldBootstrapDemoFamily =
     (!forceFirstVisitPreview && persistedState.onboardingCompleted) ||
     (!forceFirstVisitPreview && hasPersistedChildren) ||
     isDemoModeRequested();
   const childrenRef = useRef<Child[]>(initialAppState.children);
+  const effectiveScreenRef = useRef<Screen>(
+    children.length === 0 && CHILD_REQUIRED_SCREENS.has(screen) ? "first-child" : screen,
+  );
+  const hasInitializedHistoryRef = useRef(false);
+  const isApplyingPopStateRef = useRef(false);
+  const historyIndexRef = useRef(0);
+  const lastHistoryScreenRef = useRef<Screen>(
+    children.length === 0 && CHILD_REQUIRED_SCREENS.has(screen) ? "first-child" : screen,
+  );
   const bugContextRef = useRef<AppBugContext>({
     screen: shouldShowFirstVisitFlow
       ? "onboarding"
@@ -1134,10 +1153,112 @@ function App() {
   }, [children]);
 
   useEffect(() => {
+    effectiveScreenRef.current = effectiveScreen;
+  }, [effectiveScreen]);
+
+  useEffect(() => {
     if (children.length === 0 && CHILD_REQUIRED_SCREENS.has(screen)) {
       setScreen("first-child");
     }
   }, [children.length, screen]);
+
+  useEffect(() => {
+    void setIosSwipeGestureEnabled({ isEnabled: effectiveScreen !== "home" }).catch(() => undefined);
+  }, [effectiveScreen]);
+
+  useEffect(() => {
+    const nextScreen = effectiveScreen;
+
+    if (!hasInitializedHistoryRef.current) {
+      const sentinelState: AppHistoryState = { __alimjangssok: true, kind: "sentinel" };
+      const initialScreenState: AppHistoryState = {
+        __alimjangssok: true,
+        kind: "screen",
+        screen: nextScreen,
+        index: 0,
+      };
+      window.history.replaceState(sentinelState, "", window.location.href);
+      window.history.pushState(initialScreenState, "", window.location.href);
+      hasInitializedHistoryRef.current = true;
+      historyIndexRef.current = 0;
+      lastHistoryScreenRef.current = nextScreen;
+      return;
+    }
+
+    if (isApplyingPopStateRef.current) {
+      isApplyingPopStateRef.current = false;
+      lastHistoryScreenRef.current = nextScreen;
+      return;
+    }
+
+    if (lastHistoryScreenRef.current === nextScreen) {
+      return;
+    }
+
+    historyIndexRef.current += 1;
+    lastHistoryScreenRef.current = nextScreen;
+    window.history.pushState(
+      {
+        __alimjangssok: true,
+        kind: "screen",
+        screen: nextScreen,
+        index: historyIndexRef.current,
+      } satisfies AppHistoryState,
+      "",
+      window.location.href,
+    );
+  }, [effectiveScreen]);
+
+  useEffect(() => {
+    const restoreCurrentHistoryEntry = () => {
+      window.history.pushState(
+        {
+          __alimjangssok: true,
+          kind: "screen",
+          screen: effectiveScreenRef.current,
+          index: historyIndexRef.current,
+        } satisfies AppHistoryState,
+        "",
+        window.location.href,
+      );
+      lastHistoryScreenRef.current = effectiveScreenRef.current;
+    };
+
+    const handleRootBack = () => {
+      restoreCurrentHistoryEntry();
+
+      if (effectiveScreenRef.current === "home") {
+        setIsExitConfirmOpen(true);
+        return;
+      }
+
+      void closeView().catch(() => {
+        window.history.go(1);
+      });
+    };
+
+    const handlePopState = (event: PopStateEvent) => {
+      const state = event.state as AppHistoryState | null;
+
+      if (state?.__alimjangssok && state.kind === "screen" && state.screen) {
+        isApplyingPopStateRef.current = true;
+        historyIndexRef.current = typeof state.index === "number" ? state.index : historyIndexRef.current;
+        lastHistoryScreenRef.current = state.screen;
+        setIsExitConfirmOpen(false);
+        setScreen(state.screen);
+        return;
+      }
+
+      if (state?.__alimjangssok && state.kind === "sentinel") {
+        handleRootBack();
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, []);
 
   useEffect(() => {
     let ignore = false;
@@ -1680,6 +1801,16 @@ function App() {
     })();
   };
 
+  const closeExitConfirm = () => {
+    setIsExitConfirmOpen(false);
+  };
+
+  const confirmExitApp = () => {
+    void closeView().catch(() => {
+      window.history.back();
+    });
+  };
+
   const removeFamilyMember = (userId: string) => {
     void removeSupabaseFamilyMember(userId)
       .then(() => {
@@ -2179,18 +2310,22 @@ function App() {
     });
   };
 
+  const isCompactHomeHeader = effectiveScreen === "home";
+
   return (
     <div className="app-shell">
       {showChrome && (
-        <header className="app-header">
-          <Top
-            title={<Top.TitleParagraph size={22}>알림장쏙</Top.TitleParagraph>}
-            subtitleBottom={
-              <Top.SubtitleParagraph size={15}>
-                사진 또는 파일을 업로드하여 한번에 알림장을 정리해요.
-              </Top.SubtitleParagraph>
-            }
-          />
+        <header className={isCompactHomeHeader ? "app-header compact" : "app-header"}>
+          {isCompactHomeHeader ? null : (
+            <Top
+              title={<Top.TitleParagraph size={22}>알림장쏙</Top.TitleParagraph>}
+              subtitleBottom={
+                <Top.SubtitleParagraph size={15}>
+                  사진 또는 파일을 업로드하여 한번에 알림장을 정리해요.
+                </Top.SubtitleParagraph>
+              }
+            />
+          )}
           <button
             aria-label="설정"
             className="top-settings-button"
@@ -2202,7 +2337,15 @@ function App() {
         </header>
       )}
 
-      <main className={showChrome ? "screen with-nav" : "screen"}>
+      <main
+        className={
+          showChrome
+            ? isCompactHomeHeader
+              ? "screen with-nav compact-header"
+              : "screen with-nav"
+            : "screen"
+        }
+      >
         {effectiveScreen === "onboarding" && (
           <IntroBridgeScreen
             onStart={() => setScreen("onboarding-tips")}
@@ -2342,6 +2485,12 @@ function App() {
           description={analysisError.description}
           message={analysisError.message}
           onClose={() => setAnalysisError(null)}
+        />
+      ) : null}
+      {isExitConfirmOpen ? (
+        <ExitConfirmDialog
+          onClose={closeExitConfirm}
+          onConfirm={confirmExitApp}
         />
       ) : null}
       {showInviteRoleSheet ? (
@@ -2637,7 +2786,7 @@ function HomeScreen({
         <span>알림장 업로드하기</span>
       </button>
 
-      <TossAdBannerPlaceholder
+      <TossAdBanner
         adId="ait.v2.live.3a4c8b61b70145bf"
         candidate="A"
         placement="알림장 업로드하기 버튼 아래"
@@ -3001,7 +3150,7 @@ function UploadScreen({
         </div>
       </Card>
 
-      <TossAdBannerPlaceholder
+      <TossAdBanner
         adId="ait.v2.live.3dbb4427bbf84790"
         candidate="B"
         placement="알림장에서 찾을 내용 카드 아래"
@@ -3085,6 +3234,39 @@ function ErrorDialog({
         <button onClick={onClose} type="button">
           확인
         </button>
+      </section>
+    </div>
+  );
+}
+
+function ExitConfirmDialog({
+  onClose,
+  onConfirm,
+}: {
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="dialog-backdrop" role="presentation" onClick={onClose}>
+      <section
+        aria-modal="true"
+        className="exit-dialog"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <div className="error-dialog-icon">
+          <AlertCircle size={24} />
+        </div>
+        <h2>앱을 종료할까요?</h2>
+        <p>홈에서 뒤로가기를 누르면 알림장쏙이 종료돼요.</p>
+        <div className="exit-dialog-actions">
+          <Button onClick={onClose} size="m" variant="weak">
+            계속 보기
+          </Button>
+          <Button onClick={onConfirm} size="m" variant="danger">
+            종료하기
+          </Button>
+        </div>
       </section>
     </div>
   );
@@ -5125,7 +5307,7 @@ function EmptyState({ text }: { text: string }) {
   return <div className="empty-state">{text}</div>;
 }
 
-function TossAdBannerPlaceholder({
+function TossAdBanner({
   adId,
   candidate,
   placement,
@@ -5134,22 +5316,79 @@ function TossAdBannerPlaceholder({
   candidate: string;
   placement: string;
 }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [status, setStatus] = useState<"idle" | "loading" | "hidden" | "visible">("idle");
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !adId) {
+      setStatus("hidden");
+      return;
+    }
+
+    if (!TossAds.initialize.isSupported() || !TossAds.attachBanner.isSupported()) {
+      setStatus("hidden");
+      return;
+    }
+
+    let isMounted = true;
+    let banner: ReturnType<typeof TossAds.attachBanner> | null = null;
+
+    try {
+      setStatus("loading");
+
+      if (!hasInitializedTossAds) {
+        TossAds.initialize({
+          callbacks: {
+            onInitializationFailed: (error) => {
+              console.warn("토스 광고 초기화에 실패했어요.", error);
+            },
+          },
+        });
+        hasInitializedTossAds = true;
+      }
+
+      banner = TossAds.attachBanner(adId, container, {
+        theme: "light",
+        tone: "grey",
+        variant: "card",
+        callbacks: {
+          onAdRendered: () => {
+            if (isMounted) setStatus("visible");
+          },
+          onNoFill: () => {
+            if (isMounted) setStatus("hidden");
+          },
+          onAdFailedToRender: (payload) => {
+            console.warn("토스 배너 광고 렌더링에 실패했어요.", {
+              candidate,
+              placement,
+              adId,
+              error: payload.error,
+            });
+            if (isMounted) setStatus("hidden");
+          },
+        },
+      });
+    } catch (error) {
+      console.warn("토스 배너 광고를 불러오지 못했어요.", { candidate, placement, adId, error });
+      setStatus("hidden");
+    }
+
+    return () => {
+      isMounted = false;
+      banner?.destroy();
+    };
+  }, [adId, candidate, placement]);
+
   return (
-    <article aria-label={`토스 배너 광고 영역 후보 ${candidate}`} className="toss-ad-placeholder">
-      <div className="toss-ad-placeholder-top">
-        <span className="toss-ad-badge">배너 후보 {candidate}</span>
-        <span className="toss-ad-caption">{placement}</span>
-      </div>
-      <strong>Toss 배너 광고 영역</strong>
-      {adId ? (
-        <p>
-          앱인토스 광고 아이디가 연결됐어요.
-          <code className="toss-ad-id">{adId}</code>
-        </p>
-      ) : (
-        <p>광고 그룹 ID를 연결하면 이 위치에 토스 배너가 노출돼요.</p>
-      )}
-    </article>
+    <div
+      aria-hidden={status === "hidden"}
+      aria-label={`토스 배너 광고 ${candidate}`}
+      className={status === "hidden" ? "toss-ad-banner hidden" : "toss-ad-banner"}
+      data-ad-placement={placement}
+      ref={containerRef}
+    />
   );
 }
 
