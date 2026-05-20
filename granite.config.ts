@@ -1,7 +1,7 @@
 import { defineConfig } from "@apps-in-toss/web-framework/config";
 
 export default defineConfig({
-  appName: "kids-notice-ait",
+  appName: "kidsnoti",
   brand: {
     displayName: "알림장쏙",
     primaryColor: "#1B89DB",
