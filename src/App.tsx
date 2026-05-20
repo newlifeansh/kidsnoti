@@ -1,4 +1,4 @@
-import { appLogin, closeView, setIosSwipeGestureEnabled, TossAds } from "@apps-in-toss/web-framework";
+import { closeView, setIosSwipeGestureEnabled, TossAds } from "@apps-in-toss/web-framework";
 import {
   AlertCircle,
   CheckCircle2,
@@ -42,13 +42,11 @@ import {
   getSupabaseFamilyData,
   getSupabaseNotificationPreferences,
   getSupabaseSession,
-  getSupabaseTossUserKey,
   removeSupabaseFamilyMember,
   saveSupabaseNoticeResult,
   saveSupabaseNotificationPreferences,
   setSupabaseProfileDisplayName,
   subscribeSupabaseAuth,
-  syncSupabaseTossUserKey,
   updateSupabaseChild,
   updateSupabaseTodo,
   updateSupabaseTodoStatus,
@@ -923,7 +921,6 @@ function App() {
   const [children, setChildren] = useState<Child[]>(initialAppState.children);
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>(demoFamilyMembers);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [hasConnectedTossLogin, setHasConnectedTossLogin] = useState(false);
   const [todos, setTodos] = useState<TodoItem[]>(initialAppState.todos);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEventItem[]>(
     initialAppState.calendarEvents,
@@ -947,7 +944,6 @@ function App() {
     useState<LocalNotificationPreferenceState>(loadLocalNotificationPreferenceState);
   const [isSubmittingNotificationConsent, setIsSubmittingNotificationConsent] = useState(false);
   const [notificationConsentMessage, setNotificationConsentMessage] = useState<string | null>(null);
-  const [isConnectingTossLogin, setIsConnectingTossLogin] = useState(false);
   const [isExitConfirmOpen, setIsExitConfirmOpen] = useState(false);
   const hasPersistedChildren = persistedState.children.length > 0;
   const shouldBootstrapDemoFamily =
@@ -1137,20 +1133,6 @@ function App() {
     persistLocalNotificationPreferenceState(next);
   };
 
-  const syncTossLoginConnectionState = async () => {
-    if (!isSupabaseConfigured) {
-      setHasConnectedTossLogin(false);
-      return;
-    }
-
-    try {
-      const tossUserKey = await getSupabaseTossUserKey();
-      setHasConnectedTossLogin(Boolean(tossUserKey));
-    } catch {
-      setHasConnectedTossLogin(false);
-    }
-  };
-
   useEffect(() => {
     window.scrollTo({ top: 0 });
   }, [screen]);
@@ -1278,7 +1260,6 @@ function App() {
       try {
         await connectAppsInTossUser();
         const preferences = await getSupabaseNotificationPreferences();
-        await syncTossLoginConnectionState();
         if (!preferences || ignore) return;
         syncNotificationPreferencesSnapshot(notificationPreferencesToLocalState(preferences));
       } catch {
@@ -1403,7 +1384,6 @@ function App() {
 
         if (session) {
           setCurrentUserId(session.user.id);
-          await syncTossLoginConnectionState();
           const inviteCode = getInviteCodeFromLocation();
           if (inviteCode) {
             const inviteDisplayName = getInviteDisplayNameFromLocation();
@@ -1467,7 +1447,6 @@ function App() {
     const unsubscribe = subscribeSupabaseAuth((session) => {
       if (session) {
         setCurrentUserId(session.user.id);
-        void syncTossLoginConnectionState();
         void getSupabaseFamilyData()
           .then((response) => {
             if (!response) {
@@ -1491,7 +1470,6 @@ function App() {
           });
       } else {
         setCurrentUserId(null);
-        setHasConnectedTossLogin(false);
       }
     });
 
@@ -1779,33 +1757,6 @@ function App() {
     })().catch((error) => {
       showProcessingError(error, "family_invite_share");
     });
-  };
-
-  const connectTossLogin = () => {
-    if (isConnectingTossLogin) return;
-
-    void (async () => {
-      setIsConnectingTossLogin(true);
-      try {
-        await connectAppsInTossUser();
-        const { authorizationCode, referrer } = await appLogin();
-        await syncSupabaseTossUserKey(authorizationCode, referrer);
-        setHasConnectedTossLogin(true);
-      } catch (error) {
-        const message = error instanceof Error ? error.message.toLowerCase() : "";
-        if (
-          message.includes("cancel") ||
-          message.includes("canceled") ||
-          message.includes("cancelled") ||
-          message.includes("취소")
-        ) {
-          return;
-        }
-        showProcessingError(error, "toss_login_connect");
-      } finally {
-        setIsConnectingTossLogin(false);
-      }
-    })();
   };
 
   const closeExitConfirm = () => {
@@ -2440,10 +2391,7 @@ function App() {
             children={children}
             currentUserId={currentUserId}
             familyMembers={familyMembers}
-            hasConnectedTossLogin={hasConnectedTossLogin}
-            isConnectingTossLogin={isConnectingTossLogin}
             onDeleteChild={deleteChild}
-            onConnectTossLogin={connectTossLogin}
             onNavigate={setScreen}
             onRemoveMember={removeFamilyMember}
             onShareInvite={() => setShowInviteRoleSheet(true)}
@@ -3806,10 +3754,7 @@ function SettingsScreen({
   children,
   currentUserId,
   familyMembers,
-  hasConnectedTossLogin,
-  isConnectingTossLogin,
   onDeleteChild,
-  onConnectTossLogin,
   onNavigate,
   onRemoveMember,
   onShareInvite,
@@ -3817,10 +3762,7 @@ function SettingsScreen({
   children: Child[];
   currentUserId: string | null;
   familyMembers: FamilyMember[];
-  hasConnectedTossLogin: boolean;
-  isConnectingTossLogin: boolean;
   onDeleteChild: (child: Child) => void;
-  onConnectTossLogin: () => void;
   onNavigate: (screen: Screen) => void;
   onRemoveMember: (userId: string) => void;
   onShareInvite: () => void;
@@ -3873,24 +3815,6 @@ function SettingsScreen({
         <AssetIcon src="/icons/bell.svg" size={20} />
         <span>앱인토스 알림 설정</span>
         <ChevronRight size={18} />
-      </button>
-      <button className="setting-link" onClick={onConnectTossLogin} type="button">
-        <CheckCircle2 size={20} />
-        <div className="setting-link-copy">
-          <span className="setting-link-title">토스 로그인 연결</span>
-          <span className="setting-link-caption">
-            {hasConnectedTossLogin
-              ? "토스 계정 연결이 완료되어 알림 발송에 사용할 수 있어요."
-              : "토스 userKey를 연결해 스마트메시지와 푸시 발송을 준비해요."}
-          </span>
-        </div>
-        {isConnectingTossLogin ? (
-          <Loader2 className="spin" size={18} />
-        ) : hasConnectedTossLogin ? (
-          <span className="status-chip success">연결 완료</span>
-        ) : (
-          <ChevronRight size={18} />
-        )}
       </button>
       {canViewBugEvents ? (
         <button className="setting-link" onClick={() => onNavigate("bug-events")} type="button">
