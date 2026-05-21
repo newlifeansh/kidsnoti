@@ -1,21 +1,33 @@
 const MAX_PDF_PAGES = 8;
-const MAX_RENDER_WIDTH = 1800;
+const MAX_RENDER_WIDTH = 1400;
 
-export async function convertPdfFilesToImages(files: File[]) {
-  const convertedFiles: File[] = [];
-
-  for (const file of files) {
-    convertedFiles.push(...await convertPdfToImages(file));
-  }
-
-  return convertedFiles;
+export interface ConvertedPdfImagesResult {
+  files: File[];
+  totalPageCount: number;
 }
 
-async function convertPdfToImages(file: File) {
+export async function convertPdfFilesToImages(files: File[], maxOutputFiles = MAX_PDF_PAGES) {
+  const convertedFiles: File[] = [];
+  let totalPageCount = 0;
+
+  for (const file of files) {
+    const converted = await convertPdfToImages(file, Math.max(maxOutputFiles - convertedFiles.length, 0));
+    totalPageCount += converted.totalPageCount;
+    if (convertedFiles.length >= maxOutputFiles) break;
+    convertedFiles.push(...converted.files);
+  }
+
+  return {
+    files: convertedFiles,
+    totalPageCount,
+  };
+}
+
+async function convertPdfToImages(file: File, maxPages: number) {
   const pdfjsLib = await loadPdfJs();
   const data = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data }).promise;
-  const pageCount = Math.min(pdf.numPages, MAX_PDF_PAGES);
+  const pageCount = Math.min(pdf.numPages, MAX_PDF_PAGES, maxPages);
   const files: File[] = [];
 
   for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
@@ -41,10 +53,13 @@ async function convertPdfToImages(file: File) {
 
     const blob = await canvasToBlob(canvas);
     const safeName = file.name.replace(/\\.pdf$/i, "");
-    files.push(new File([blob], `${safeName}-${pageNumber}.png`, { type: "image/png" }));
+    files.push(new File([blob], `${safeName}-${pageNumber}.jpg`, { type: "image/jpeg" }));
   }
 
-  return files;
+  return {
+    files,
+    totalPageCount: pdf.numPages,
+  };
 }
 
 async function loadPdfJs() {
@@ -66,6 +81,6 @@ function canvasToBlob(canvas: HTMLCanvasElement) {
       }
 
       reject(new Error("PDF 페이지 이미지를 만들지 못했어요."));
-    }, "image/png");
+    }, "image/jpeg", 0.86);
   });
 }

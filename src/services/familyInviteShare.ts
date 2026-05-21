@@ -1,9 +1,32 @@
 import { getTossShareLink, share } from "@apps-in-toss/web-framework";
 
-const APP_IN_TOSS_NAME = "kids-notice-ait";
+const APP_IN_TOSS_NAME = "kidsnoti";
 
 export interface FamilyInviteShareResult {
   fallbackInviteLink?: string;
+}
+
+function hasFinalConsonant(text: string) {
+  const lastCharacter = [...text.trim()].at(-1);
+  if (!lastCharacter) return false;
+
+  const code = lastCharacter.charCodeAt(0);
+  const firstHangulCode = 0xac00;
+  const lastHangulCode = 0xd7a3;
+  if (code < firstHangulCode || code > lastHangulCode) {
+    return false;
+  }
+
+  return (code - firstHangulCode) % 28 !== 0;
+}
+
+export function createFamilyInviteMessage(inviteLink: string, invitedDisplayName?: string) {
+  const name = invitedDisplayName?.trim();
+  const copy = name
+    ? `알림장쏙에서 ${name}${hasFinalConsonant(name) ? "으로" : "로"} 함께할 수 있게 초대했어요.`
+    : "알림장쏙에서 우리 아이 준비물과 일정을 같이 확인해요.";
+
+  return [copy, inviteLink].join("\n");
 }
 
 export async function shareFamilyInvite(
@@ -21,12 +44,7 @@ export async function shareFamilyInvite(
   const inviteLink = await createInviteLink(invitePath);
   const browserInviteLink = `${window.location.origin}/invite?${inviteQuery.toString()}`;
   const resolvedInviteLink = inviteLink || browserInviteLink;
-  const message = [
-    invitedDisplayName?.trim()
-      ? `알림장쏙에서 ${invitedDisplayName.trim()}으로 함께할 수 있게 초대했어요.`
-      : "알림장쏙에서 우리 아이 준비물과 일정을 같이 확인해요.",
-    resolvedInviteLink,
-  ].join("\n");
+  const message = createFamilyInviteMessage(resolvedInviteLink, invitedDisplayName);
 
   try {
     await share({ message });

@@ -1,4 +1,10 @@
-import { closeView, setIosSwipeGestureEnabled, TossAds } from "@apps-in-toss/web-framework";
+import {
+  closeView,
+  loadFullScreenAd,
+  setIosSwipeGestureEnabled,
+  showFullScreenAd,
+  TossAds,
+} from "@apps-in-toss/web-framework";
 import {
   AlertCircle,
   CheckCircle2,
@@ -10,7 +16,7 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
-import { Component, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 
 import "./App.css";
 import {
@@ -27,7 +33,7 @@ import {
 import { fetchBugEventLogs, trackBugEvent, type BugEventInput, type BugEventLog } from "./services/bugTracking";
 import { convertPdfFilesToImages } from "./services/pdfUpload";
 import { optimizeUploadImages } from "./services/uploadImage";
-import { shareFamilyInvite } from "./services/familyInviteShare";
+import { createFamilyInviteMessage, shareFamilyInvite } from "./services/familyInviteShare";
 import { isSupabaseConfigured } from "./services/supabaseClient";
 import {
   acceptSupabaseFamilyInvite,
@@ -47,6 +53,7 @@ import {
   saveSupabaseNotificationPreferences,
   setSupabaseProfileDisplayName,
   subscribeSupabaseAuth,
+  type SupabaseFamilyData,
   updateSupabaseChild,
   updateSupabaseTodo,
   updateSupabaseTodoStatus,
@@ -79,6 +86,7 @@ type Screen =
   | "bug-events";
 
 let hasInitializedTossAds = false;
+let tossAdsInitializePromise: Promise<void> | null = null;
 
 function canUseTossAds() {
   try {
@@ -86,6 +94,61 @@ function canUseTossAds() {
   } catch {
     return false;
   }
+}
+
+function initializeTossAds() {
+  if (hasInitializedTossAds) {
+    return Promise.resolve();
+  }
+
+  if (tossAdsInitializePromise) {
+    return tossAdsInitializePromise;
+  }
+
+  tossAdsInitializePromise = new Promise<void>((resolve, reject) => {
+    try {
+      TossAds.initialize({
+        callbacks: {
+          onInitialized: () => {
+            hasInitializedTossAds = true;
+            resolve();
+          },
+          onInitializationFailed: (error) => {
+            tossAdsInitializePromise = null;
+            reject(error);
+          },
+        },
+      });
+    } catch (error) {
+      tossAdsInitializePromise = null;
+      reject(error);
+    }
+  });
+
+  return tossAdsInitializePromise;
+}
+
+function canUseFullScreenAd() {
+  try {
+    return loadFullScreenAd.isSupported() && showFullScreenAd.isSupported();
+  } catch {
+    return false;
+  }
+}
+
+function runWithTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string) {
+  let timeoutId: number | undefined;
+
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      timeoutId = window.setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+    }
+  });
 }
 
 interface Child {
@@ -149,6 +212,14 @@ interface ErrorDialogState {
   message: string;
   code?: string;
   description?: string;
+}
+
+interface PendingFamilyInvite {
+  code: string;
+  displayName?: string;
+  existingChildrenCount: number;
+  existingTodoCount: number;
+  existingEventCount: number;
 }
 
 const MAX_UPLOAD_FILES = 3;
@@ -283,7 +354,8 @@ const initialEvents: CalendarEventItem[] = [];
 
 const APP_STATE_STORAGE_KEY = "alimjang-ssok-app-state-v1";
 const ONBOARDING_GUIDE_DISMISSED_KEY = "alimjangssok.onboardingGuideDismissed";
-const ANALYZE_TIMEOUT_MS = 90000;
+const ANALYZE_TIMEOUT_MS = 180000;
+const ANALYSIS_FULL_SCREEN_AD_ID = "ait.v2.live.31cd218812e44ce0";
 const HOME_SHORTCUT_PROMPT_PENDING_KEY = "alimjangssok.home-shortcut.prompt-pending";
 const HOME_SHORTCUT_PROMPT_SEEN_KEY = "alimjangssok.home-shortcut.prompt-seen";
 const HOME_SHORTCUT_PROMPT_DISMISSED_KEY = "alimjangssok.home-shortcut.prompt-dismissed";
@@ -900,6 +972,15 @@ function shouldPromptForNotificationConsent(
   return Number.isFinite(elapsed) ? elapsed >= NOTIFICATION_PROMPT_COOLDOWN_MS : true;
 }
 
+function hasFamilyContent(familyData: SupabaseFamilyData | null) {
+  return Boolean(
+    familyData &&
+      (familyData.children.length > 0 ||
+        familyData.todos.length > 0 ||
+        familyData.calendarEvents.length > 0),
+  );
+}
+
 function App() {
   const [persistedState] = useState(loadPersistedAppState);
   const forceFirstVisitPreview = isFirstVisitPreviewRequested();
@@ -931,6 +1012,8 @@ function App() {
     inviteLink: string;
     invitedDisplayName?: string;
   } | null>(null);
+  const [pendingFamilyInvite, setPendingFamilyInvite] = useState<PendingFamilyInvite | null>(null);
+  const [isAcceptingFamilyInvite, setIsAcceptingFamilyInvite] = useState(false);
   const [showInviteRoleSheet, setShowInviteRoleSheet] = useState(false);
   const [notificationPreferencesSnapshot, setNotificationPreferencesSnapshot] = useState<LocalNotificationPreferenceState>(
     loadLocalNotificationPreferenceState,
@@ -1065,22 +1148,126 @@ function App() {
     });
   };
 
+  const applyInviteFamilyData = useCallback((
+    invitedFamily: SupabaseFamilyData,
+    sessionUserId: string,
+    inviteDisplayName?: string,
+  ) => {
+    applyFamilyResponse({
+      responseFamilyMembers: inviteDisplayName
+        ? invitedFamily.familyMembers.map((member) =>
+            member.userId === sessionUserId && !member.displayName
+              ? { ...member, displayName: inviteDisplayName }
+              : member,
+          )
+        : invitedFamily.familyMembers,
+      responseChildren: invitedFamily.children,
+      responseTodos: invitedFamily.todos,
+      responseCalendarEvents: invitedFamily.calendarEvents,
+      setFamilyMembers,
+      setChildren,
+      setTodos,
+      setCalendarEvents,
+    });
+    setScreen(invitedFamily.children.length > 0 ? "home" : "first-child");
+  }, []);
+
+  const acceptFamilyInvite = useCallback(async (inviteCode: string, inviteDisplayName?: string) => {
+    const session = await getSupabaseSession();
+    if (!session) throw new Error("Supabase 로그인이 필요해요.");
+
+    if (inviteDisplayName) {
+      await setSupabaseProfileDisplayName(inviteDisplayName);
+    }
+
+    const invitedFamily = await acceptSupabaseFamilyInvite(inviteCode);
+    clearInviteCodeFromLocation();
+    applyInviteFamilyData(invitedFamily, session.user.id, inviteDisplayName);
+  }, [applyInviteFamilyData]);
+
   const withAnalyzeTimeout = async <T,>(promise: Promise<T>) => {
-    let timeoutId: number | undefined;
+    return runWithTimeout(promise, ANALYZE_TIMEOUT_MS, "ANALYZE_TIMEOUT");
+  };
+
+  const showAnalysisFullScreenAd = async () => {
+    if (!canUseFullScreenAd()) {
+      return;
+    }
 
     try {
-      return await Promise.race([
-        promise,
-        new Promise<T>((_, reject) => {
-          timeoutId = window.setTimeout(() => {
-            reject(new Error("ANALYZE_TIMEOUT"));
-          }, ANALYZE_TIMEOUT_MS);
+      trackAppEvent({
+        eventType: "fullscreen_ad_load_started",
+        severity: "info",
+        step: "analyze_upload.fullscreen_ad",
+        message: "AI 분석 전 전면 광고를 불러오고 있어요.",
+        metadata: {
+          adGroupId: ANALYSIS_FULL_SCREEN_AD_ID,
+        },
+      });
+
+      await runWithTimeout(
+        new Promise<void>((resolve, reject) => {
+          let cleanup = () => undefined;
+          cleanup = loadFullScreenAd({
+            options: { adGroupId: ANALYSIS_FULL_SCREEN_AD_ID },
+            onEvent: (event) => {
+              if (event.type === "loaded") {
+                cleanup();
+                resolve();
+              }
+            },
+            onError: (error) => {
+              cleanup();
+              reject(error);
+            },
+          });
         }),
-      ]);
-    } finally {
-      if (timeoutId) {
-        window.clearTimeout(timeoutId);
-      }
+        5000,
+        "FULLSCREEN_AD_LOAD_TIMEOUT",
+      );
+
+      await runWithTimeout(
+        new Promise<void>((resolve, reject) => {
+          let cleanup = () => undefined;
+          cleanup = showFullScreenAd({
+            options: { adGroupId: ANALYSIS_FULL_SCREEN_AD_ID },
+            onEvent: (event) => {
+              if (event.type === "dismissed" || event.type === "failedToShow") {
+                cleanup();
+                resolve();
+              }
+            },
+            onError: (error) => {
+              cleanup();
+              reject(error);
+            },
+          });
+        }),
+        15000,
+        "FULLSCREEN_AD_SHOW_TIMEOUT",
+      );
+
+      trackAppEvent({
+        eventType: "fullscreen_ad_finished",
+        severity: "info",
+        step: "analyze_upload.fullscreen_ad",
+        message: "AI 분석 전 전면 광고가 종료되었어요.",
+        metadata: {
+          adGroupId: ANALYSIS_FULL_SCREEN_AD_ID,
+        },
+      });
+    } catch (error) {
+      console.warn("AI 분석 전 전면 광고를 표시하지 못했어요.", error);
+      trackAppEvent({
+        eventType: "fullscreen_ad_skipped",
+        severity: "warning",
+        step: "analyze_upload.fullscreen_ad",
+        message: error instanceof Error ? error.message : "전면 광고 표시 실패",
+        metadata: {
+          adGroupId: ANALYSIS_FULL_SCREEN_AD_ID,
+          error: serializeErrorForLog(error),
+        },
+      });
     }
   };
 
@@ -1218,9 +1405,21 @@ function App() {
         return;
       }
 
-      void closeView().catch(() => {
-        window.history.go(1);
-      });
+      isApplyingPopStateRef.current = true;
+      historyIndexRef.current = Math.max(historyIndexRef.current + 1, 1);
+      lastHistoryScreenRef.current = "home";
+      window.history.pushState(
+        {
+          __alimjangssok: true,
+          kind: "screen",
+          screen: "home",
+          index: historyIndexRef.current,
+        } satisfies AppHistoryState,
+        "",
+        window.location.href,
+      );
+      setIsExitConfirmOpen(false);
+      setScreen("home");
     };
 
     const handlePopState = (event: PopStateEvent) => {
@@ -1341,6 +1540,14 @@ function App() {
 
   useEffect(() => {
     let ignore = false;
+
+    if (forceFirstVisitPreview) {
+      setCurrentUserId(null);
+      return () => {
+        ignore = true;
+      };
+    }
+
     const hasLocalFamilyState = () => childrenRef.current.length > 0 || hasPersistedChildren;
     const shouldKeepLocalFamilyState = (responseChildrenLength: number) =>
       !isDemoModeRequested() && responseChildrenLength === 0 && hasLocalFamilyState();
@@ -1384,24 +1591,21 @@ function App() {
           const inviteCode = getInviteCodeFromLocation();
           if (inviteCode) {
             const inviteDisplayName = getInviteDisplayNameFromLocation();
-            if (inviteDisplayName) {
-              await setSupabaseProfileDisplayName(inviteDisplayName);
-            }
-            const invitedFamily = await acceptSupabaseFamilyInvite(inviteCode);
+            const currentFamilyData = await getSupabaseFamilyData();
             if (ignore) return;
-            clearInviteCodeFromLocation();
-            applyData(
-              inviteDisplayName
-                ? {
-                    ...invitedFamily,
-                    familyMembers: invitedFamily.familyMembers.map((member) =>
-                      member.userId === session.user.id && !member.displayName
-                        ? { ...member, displayName: inviteDisplayName }
-                        : member,
-                    ),
-                  }
-                : invitedFamily,
-            );
+
+            if (hasFamilyContent(currentFamilyData) || hasLocalFamilyState()) {
+              setPendingFamilyInvite({
+                code: inviteCode,
+                displayName: inviteDisplayName ?? undefined,
+                existingChildrenCount: currentFamilyData?.children.length ?? childrenRef.current.length,
+                existingTodoCount: currentFamilyData?.todos.length ?? 0,
+                existingEventCount: currentFamilyData?.calendarEvents.length ?? 0,
+              });
+              return;
+            }
+
+            await acceptFamilyInvite(inviteCode, inviteDisplayName ?? undefined);
             return;
           }
 
@@ -1474,7 +1678,7 @@ function App() {
       ignore = true;
       unsubscribe();
     };
-  }, [hasPersistedChildren, shouldBootstrapDemoFamily]);
+  }, [acceptFamilyInvite, forceFirstVisitPreview, hasPersistedChildren, shouldBootstrapDemoFamily]);
 
   const addChild = async (child: Child) => {
     try {
@@ -1543,32 +1747,43 @@ function App() {
   };
 
   const saveChild = async (child: Child) => {
+    const previousChild = editingChild ?? children.find((item) => item.id === child.id) ?? child;
+    const previousChildId = previousChild.id;
     let nextChild = child;
 
     try {
-      const updatedChild = await updateSupabaseChild(child.id, {
+      await connectAppsInTossUser();
+      const childPayload = {
         name: child.name,
         avatarId: child.avatar,
         schoolName: child.school,
         grade: child.grade,
         className: child.className,
-      });
-      nextChild = childProfileToChild(updatedChild);
-    } catch {
+      };
+      const savedChild = isUuid(child.id)
+        ? await updateSupabaseChild(child.id, childPayload)
+        : await createSupabaseChild(childPayload);
+      nextChild = childProfileToChild(savedChild);
+    } catch (error) {
+      console.warn("아이 프로필 원격 저장에 실패해 로컬 상태를 먼저 갱신했어요.", error);
       // 로컬/데모 모드에서는 화면 상태만 먼저 갱신합니다.
     }
 
     setChildren((current) =>
-      current.map((item) => (item.id === child.id ? nextChild : item)),
+      current.map((item) => (item.id === previousChildId ? nextChild : item)),
     );
     setTodos((current) =>
       current.map((todo) =>
-        todo.childId === child.id ? { ...todo, childName: nextChild.name } : todo,
+        todo.childId === previousChildId
+          ? { ...todo, childId: nextChild.id, childName: nextChild.name }
+          : todo,
       ),
     );
     setCalendarEvents((current) =>
       current.map((event) =>
-        event.childId === child.id ? { ...event, childName: nextChild.name } : event,
+        event.childId === previousChildId
+          ? { ...event, childId: nextChild.id, childName: nextChild.name }
+          : event,
       ),
     );
     setEditingChild(null);
@@ -1756,6 +1971,29 @@ function App() {
     });
   };
 
+  const cancelPendingFamilyInvite = () => {
+    setPendingFamilyInvite(null);
+    clearInviteCodeFromLocation();
+  };
+
+  const confirmPendingFamilyInvite = () => {
+    if (!pendingFamilyInvite || isAcceptingFamilyInvite) return;
+
+    setIsAcceptingFamilyInvite(true);
+    void acceptFamilyInvite(pendingFamilyInvite.code, pendingFamilyInvite.displayName)
+      .then(() => {
+        setPendingFamilyInvite(null);
+      })
+      .catch((error) => {
+        showProcessingError(error, "family_invite_accept", {
+          inviteCode: pendingFamilyInvite.code,
+        });
+      })
+      .finally(() => {
+        setIsAcceptingFamilyInvite(false);
+      });
+  };
+
   const closeExitConfirm = () => {
     setIsExitConfirmOpen(false);
   };
@@ -1916,8 +2154,9 @@ function App() {
   const analyzeUpload = async () => {
     if (selectedImages.length === 0) return;
 
-    setScreen("analyzing");
     setAnalysisError(null);
+    await showAnalysisFullScreenAd();
+    setScreen("analyzing");
     trackAppEvent({
       eventType: "ocr_started",
       severity: "info",
@@ -2266,38 +2505,12 @@ function App() {
     });
   };
 
-  const isCompactHomeHeader = effectiveScreen === "home";
-  const showSettingsButton = effectiveScreen !== "home" && effectiveScreen !== "settings";
-
   return (
     <div className="app-shell">
-      {showChrome && (
-        <header className={isCompactHomeHeader ? "app-header compact" : "app-header"}>
-          {isCompactHomeHeader ? null : (
-            <div className="app-header-copy">
-              <h1>알림장쏙</h1>
-              <p>사진 또는 파일을 업로드하여 한번에 알림장을 정리해요.</p>
-            </div>
-          )}
-          {showSettingsButton ? (
-            <button
-              aria-label="설정"
-              className="top-settings-button"
-              onClick={() => setScreen("settings")}
-              type="button"
-            >
-              <SettingsTabIcon size={22} />
-            </button>
-          ) : null}
-        </header>
-      )}
-
       <main
         className={
           showChrome
-            ? isCompactHomeHeader
-              ? "screen with-nav compact-header"
-              : "screen with-nav"
+            ? "screen with-nav"
             : "screen"
         }
       >
@@ -2327,13 +2540,14 @@ function App() {
         {effectiveScreen === "home" && (
           <HomeScreen
             children={children}
-          events={calendarEvents}
-          onAddEvent={addEvent}
-          onChangeChildAvatar={changeChildAvatar}
-          onDeleteEvent={deleteCalendarEvent}
-          todos={todos}
-          onAddTodo={addTodo}
-          onDeleteTodo={deleteTodo}
+            events={calendarEvents}
+            onAddEvent={addEvent}
+            onChangeChildAvatar={changeChildAvatar}
+            onDeleteEvent={deleteCalendarEvent}
+            todos={todos}
+            onAddTodo={addTodo}
+            onDeleteTodo={deleteTodo}
+            onEditChild={editChild}
             onNavigate={setScreen}
             onSaveTodo={saveTodo}
             onToggleTodo={toggleTodo}
@@ -2393,6 +2607,7 @@ function App() {
             currentUserId={currentUserId}
             familyMembers={familyMembers}
             onDeleteChild={deleteChild}
+            onEditChild={editChild}
             onNavigate={setScreen}
             onRemoveMember={removeFamilyMember}
             onShareInvite={() => setShowInviteRoleSheet(true)}
@@ -2445,6 +2660,17 @@ function App() {
           onConfirm={confirmExitApp}
         />
       ) : null}
+      {pendingFamilyInvite ? (
+        <FamilyInviteSwitchDialog
+          existingChildrenCount={pendingFamilyInvite.existingChildrenCount}
+          existingEventCount={pendingFamilyInvite.existingEventCount}
+          existingTodoCount={pendingFamilyInvite.existingTodoCount}
+          invitedDisplayName={pendingFamilyInvite.displayName}
+          isSubmitting={isAcceptingFamilyInvite}
+          onCancel={cancelPendingFamilyInvite}
+          onConfirm={confirmPendingFamilyInvite}
+        />
+      ) : null}
       {showInviteRoleSheet ? (
         <InviteRoleSheet
           onClose={() => setShowInviteRoleSheet(false)}
@@ -2487,6 +2713,31 @@ function IntroBridgeScreen({ onStart }: { onStart: () => void }) {
   );
 }
 
+function OnboardingTodoPreview() {
+  return (
+    <div className="tips-todo-preview" aria-hidden="true">
+      <div className="tips-todo-card floating">
+        <div>
+          <span>오늘</span>
+          <strong>체육복 챙기기</strong>
+        </div>
+        <CheckCircle2 size={18} />
+      </div>
+      <div className="tips-todo-card">
+        <div>
+          <span>내일</span>
+          <strong>준비물 알림</strong>
+        </div>
+        <em>오후 8:00</em>
+      </div>
+      <div className="tips-todo-calendar">
+        <span>5월 22일</span>
+        <strong>체육대회</strong>
+      </div>
+    </div>
+  );
+}
+
 const onboardingTips = [
   {
     id: "capture",
@@ -2503,18 +2754,11 @@ const onboardingTips = [
     visual: <AssetIcon src="/icons/upload.svg" size={34} />,
   },
   {
-    id: "organize",
-    title: "AI가 날짜별로 할 일을 자동 정리해줘요",
-    description: "준비물, 숙제, 제출물, 일정 후보를 아이 기준으로 보기 좋게 나눠드려요.",
-    accent: "AI 정리",
-    visual: <AssetIcon src="/icons/check.svg" size={34} />,
-  },
-  {
     id: "reminder",
-    title: "전날과 당일, 잊지 않도록 알림을 받을 수 있어요",
-    description: "중요한 준비물과 일정은 미리 알림으로 챙겨서 놓치지 않게 도와드려요.",
-    accent: "알림 받기",
-    visual: <AssetIcon src="/icons/bell.svg" size={34} />,
+    title: "AI가 날짜별로 할 일을 정리해주고, 알림도 보내줘요",
+    description: "정리된 준비물과 일정은 전날과 당일에 다시 알려드려서 잊지 않게 도와드려요.",
+    accent: "AI 정리 · 알림",
+    visual: <OnboardingTodoPreview />,
   },
 ] satisfies Array<{
   id: string;
@@ -2565,12 +2809,16 @@ function OnboardingTipsScreen({
         <div className="tips-slider-track">
           {onboardingTips.map((tip) => (
             <article className="tips-slider-card" key={tip.id}>
-              <div className="tips-visual-shell">
+              <div className={tip.id === "reminder" ? "tips-visual-shell todo-preview-shell" : "tips-visual-shell"}>
                 <div className="tips-visual-glow" aria-hidden="true" />
-                <div className="tips-visual-icon">{tip.visual}</div>
-                <div className="tips-visual-note primary">
-                  <span>{tip.accent}</span>
+                <div className={tip.id === "reminder" ? "tips-visual-icon todo-preview-host" : "tips-visual-icon"}>
+                  {tip.visual}
                 </div>
+                {tip.id !== "reminder" ? (
+                  <div className="tips-visual-note primary">
+                    <span>{tip.accent}</span>
+                  </div>
+                ) : null}
               </div>
 
               <div className="tips-copy">
@@ -2607,6 +2855,7 @@ function HomeScreen({
   onAddEvent,
   onChangeChildAvatar,
   onDeleteEvent,
+  onEditChild,
   todos,
   onAddTodo,
   onDeleteTodo,
@@ -2619,6 +2868,7 @@ function HomeScreen({
   onAddEvent: (event: Omit<CalendarEventItem, "id">) => void;
   onChangeChildAvatar: (childId: string, avatarId: string) => void;
   onDeleteEvent: (id: string) => void;
+  onEditChild: (child: Child) => void;
   todos: TodoItem[];
   onAddTodo: (todo: Omit<TodoItem, "id" | "completed">) => void;
   onDeleteTodo: (id: string) => void;
@@ -2732,7 +2982,13 @@ function HomeScreen({
         <button
           aria-label={`${currentChild?.name ?? "아이"} 정보 보기`}
           className="avatar-stage"
-          onClick={() => onNavigate("children")}
+          onClick={() => {
+            if (currentChild) {
+              onEditChild(currentChild);
+            } else {
+              onNavigate("add-child");
+            }
+          }}
           type="button"
         >
           <KidAvatar avatarId={currentChild?.avatar ?? characterOptions[0].id} size={104} />
@@ -3004,14 +3260,25 @@ function UploadScreen({
     }
 
     const selectedFiles = Array.from(event.target.files ?? []);
-    const imageFiles = selectedFiles.filter((file) => ["image/jpeg", "image/png"].includes(file.type));
+    const imageFiles = selectedFiles
+      .filter((file) => ["image/jpeg", "image/png"].includes(file.type))
+      .slice(0, remainingSlots);
     const pdfFiles = selectedFiles.filter((file) => file.type === "application/pdf");
+    const pdfSlots = Math.max(remainingSlots - imageFiles.length, 0);
 
     try {
       setIsConvertingPdf(pdfFiles.length > 0);
-      const convertedPdfImages = pdfFiles.length > 0 ? await convertPdfFilesToImages(pdfFiles) : [];
+      const convertedPdfResult = pdfFiles.length > 0
+        ? await convertPdfFilesToImages(pdfFiles, pdfSlots)
+        : { files: [], totalPageCount: 0 };
+      const convertedPdfImages = convertedPdfResult.files;
       const optimizedImageFiles = await optimizeUploadImages(imageFiles);
-      const uploadFiles = [...optimizedImageFiles, ...convertedPdfImages];
+      const optimizedPdfImages = await optimizeUploadImages(convertedPdfImages);
+      const uploadFiles = [...optimizedImageFiles, ...optimizedPdfImages];
+      const truncatedPdfPageCount = Math.max(
+        convertedPdfResult.totalPageCount - convertedPdfImages.length,
+        0,
+      );
 
       if (uploadFiles.length > 0) {
         onTrackEvent({
@@ -3025,12 +3292,24 @@ function UploadScreen({
             pdfCount: pdfFiles.length,
             originalImageBytes: imageFiles.reduce((sum, file) => sum + file.size, 0),
             optimizedImageBytes: optimizedImageFiles.reduce((sum, file) => sum + file.size, 0),
+            convertedPdfPageCount: convertedPdfImages.length,
+            totalPdfPageCount: convertedPdfResult.totalPageCount,
+            truncatedPdfPageCount,
+            convertedPdfBytes: optimizedPdfImages.reduce((sum, file) => sum + file.size, 0),
             fileTypes: uploadFiles.map((file) => file.type),
           },
         });
-        onAddImages(uploadFiles.slice(0, remainingSlots));
-        if (uploadFiles.length > remainingSlots) {
-          window.alert(`파일은 최대 ${MAX_UPLOAD_FILES}개까지만 올릴 수 있어요.`);
+        onAddImages(uploadFiles);
+        if (truncatedPdfPageCount > 0) {
+          const pdfAttachmentMessage = convertedPdfImages.length > 0
+            ? `PDF는 앞 ${convertedPdfImages.length}장만 첨부했어요.`
+            : "이미 첨부된 파일이 3장이라 PDF는 첨부하지 못했어요.";
+
+          window.alert(
+            `첨부파일은 최대 ${MAX_UPLOAD_FILES}장까지 업로드돼요.\n${pdfAttachmentMessage} ${MAX_UPLOAD_FILES}장 이후 내용은 스크린샷으로 별도로 업로드해주세요.`,
+          );
+        } else if (selectedFiles.length > uploadFiles.length) {
+          window.alert(`첨부파일은 최대 ${MAX_UPLOAD_FILES}장까지 업로드돼요.`);
         }
       }
     } catch (error) {
@@ -3125,7 +3404,7 @@ function UploadScreen({
 
 function AnalyzingScreen() {
   const steps = useMemo(
-    () => ["알림장을 읽고 있어요", "날짜와 준비물을 찾고 있어요", "일정과 To-do를 나누고 있어요"],
+    () => ["알림장을 읽고 있어요", "날짜와 준비물을 찾고 있어요", "해야할 일을 정리하고 있어요"],
     [],
   );
   const [currentStep, setCurrentStep] = useState(0);
@@ -3194,6 +3473,60 @@ function ErrorDialog({
         <button onClick={onClose} type="button">
           확인
         </button>
+      </section>
+    </div>
+  );
+}
+
+function FamilyInviteSwitchDialog({
+  existingChildrenCount,
+  existingEventCount,
+  existingTodoCount,
+  invitedDisplayName,
+  isSubmitting,
+  onCancel,
+  onConfirm,
+}: {
+  existingChildrenCount: number;
+  existingEventCount: number;
+  existingTodoCount: number;
+  invitedDisplayName?: string;
+  isSubmitting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const targetLabel = invitedDisplayName ? `${invitedDisplayName} 초대 가족` : "초대된 가족";
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onClick={isSubmitting ? undefined : onCancel}>
+      <section
+        aria-modal="true"
+        className="exit-dialog family-invite-switch-dialog"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <div className="error-dialog-icon">
+          <AlertCircle size={24} />
+        </div>
+        <h2>{targetLabel}으로 전환할까요?</h2>
+        <p>
+          지금 계정에 저장된 아이 정보와 준비물, 일정 화면은 더 이상 이 계정의 기본 화면에 보이지 않고
+          초대한 가족의 정보로 바뀌어요.
+        </p>
+        <div className="family-invite-summary">
+          <span>현재 저장된 정보</span>
+          <strong>
+            아이 {existingChildrenCount}명 · 할 일 {existingTodoCount}개 · 일정 {existingEventCount}개
+          </strong>
+        </div>
+        <div className="exit-dialog-actions">
+          <Button disabled={isSubmitting} onClick={onCancel} size="m" variant="weak">
+            취소
+          </Button>
+          <Button disabled={isSubmitting} onClick={onConfirm} size="m">
+            {isSubmitting ? "전환 중" : "확인하고 합류"}
+          </Button>
+        </div>
       </section>
     </div>
   );
@@ -3346,11 +3679,6 @@ function ResultScreen({
         <h1>알림장을 분류했어요</h1>
         <p>저장할 항목을 가볍게 확인해주세요.</p>
       </div>
-
-      <TossInterstitialAdPlaceholder
-        adId="ait.v2.live.31cd218812e44ce0"
-        placement="업로드 완료 후 전면 배너 광고"
-      />
 
       <section className="result-summary-card">
         <strong>총 {totalCount}개 항목</strong>
@@ -3633,6 +3961,14 @@ function ChildSetupScreen({
   const [isAvatarPickerOpen, setIsAvatarPickerOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  useEffect(() => {
+    setName(child?.name ?? "");
+    setSchool(child?.school ?? "");
+    setGrade(child?.grade ?? "");
+    setClassName(child?.className ?? "");
+    setAvatar(child?.avatar ?? characterOptions[0].id);
+  }, [child]);
+
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     if (!name.trim()) return;
@@ -3764,6 +4100,7 @@ function SettingsScreen({
   currentUserId,
   familyMembers,
   onDeleteChild,
+  onEditChild,
   onNavigate,
   onRemoveMember,
   onShareInvite,
@@ -3772,6 +4109,7 @@ function SettingsScreen({
   currentUserId: string | null;
   familyMembers: FamilyMember[];
   onDeleteChild: (child: Child) => void;
+  onEditChild: (child: Child) => void;
   onNavigate: (screen: Screen) => void;
   onRemoveMember: (userId: string) => void;
   onShareInvite: () => void;
@@ -3864,6 +4202,11 @@ function SettingsScreen({
           onClose={() => setSelectedChild(null)}
           onDelete={() => {
             void deleteChild(selectedChild);
+          }}
+          onEdit={() => {
+            const childToEdit = selectedChild;
+            setSelectedChild(null);
+            onEditChild(childToEdit);
           }}
         />
       ) : null}
@@ -4057,10 +4400,12 @@ function ChildDetailSheet({
   child,
   onClose,
   onDelete,
+  onEdit,
 }: {
   child: Child;
   onClose: () => void;
   onDelete: () => void;
+  onEdit: () => void;
 }) {
   return (
     <div className="bottom-sheet-backdrop" role="presentation" onClick={onClose}>
@@ -4094,8 +4439,8 @@ function ChildDetailSheet({
             <InfoLine label="반 이름" value={child.className ?? "-"} />
           </div>
           <div className="sheet-actions">
-            <button className="secondary-action" onClick={onClose} type="button">
-              닫기
+            <button className="primary-action" onClick={onEdit} type="button">
+              수정하기
             </button>
             <button className="danger-action" onClick={onDelete} type="button">
               삭제
@@ -4822,12 +5167,7 @@ function InviteLinkSheet({
   onClose: () => void;
 }) {
   const [copyStatus, setCopyStatus] = useState<"idle" | "link" | "message">("idle");
-  const shareMessage = [
-    invitedDisplayName
-      ? `알림장쏙에서 ${invitedDisplayName}으로 함께할 수 있게 초대했어요.`
-      : "알림장쏙에서 우리 아이 준비물과 일정을 같이 확인해요.",
-    inviteLink,
-  ].join("\n");
+  const shareMessage = createFamilyInviteMessage(inviteLink, invitedDisplayName);
   const canUseSystemShare = typeof navigator !== "undefined" && typeof navigator.share === "function";
 
   const handleCopy = (value: string, nextStatus: "link" | "message") => {
@@ -5273,46 +5613,40 @@ function TossAdBanner({
     let isMounted = true;
     let banner: ReturnType<typeof TossAds.attachBanner> | null = null;
 
-    try {
-      setStatus("loading");
+    void (async () => {
+      try {
+        setStatus("loading");
 
-      if (!hasInitializedTossAds) {
-        TossAds.initialize({
+        await initializeTossAds();
+        if (!isMounted) return;
+
+        banner = TossAds.attachBanner(adId, container, {
+          theme: "light",
+          tone: "grey",
+          variant: "card",
           callbacks: {
-            onInitializationFailed: (error) => {
-              console.warn("토스 광고 초기화에 실패했어요.", error);
+            onAdRendered: () => {
+              if (isMounted) setStatus("visible");
+            },
+            onNoFill: () => {
+              if (isMounted) setStatus("hidden");
+            },
+            onAdFailedToRender: (payload) => {
+              console.warn("토스 배너 광고 렌더링에 실패했어요.", {
+                candidate,
+                placement,
+                adId,
+                error: payload.error,
+              });
+              if (isMounted) setStatus("hidden");
             },
           },
         });
-        hasInitializedTossAds = true;
+      } catch (error) {
+        console.warn("토스 배너 광고를 불러오지 못했어요.", { candidate, placement, adId, error });
+        if (isMounted) setStatus("hidden");
       }
-
-      banner = TossAds.attachBanner(adId, container, {
-        theme: "light",
-        tone: "grey",
-        variant: "card",
-        callbacks: {
-          onAdRendered: () => {
-            if (isMounted) setStatus("visible");
-          },
-          onNoFill: () => {
-            if (isMounted) setStatus("hidden");
-          },
-          onAdFailedToRender: (payload) => {
-            console.warn("토스 배너 광고 렌더링에 실패했어요.", {
-              candidate,
-              placement,
-              adId,
-              error: payload.error,
-            });
-            if (isMounted) setStatus("hidden");
-          },
-        },
-      });
-    } catch (error) {
-      console.warn("토스 배너 광고를 불러오지 못했어요.", { candidate, placement, adId, error });
-      setStatus("hidden");
-    }
+    })();
 
     return () => {
       isMounted = false;
@@ -5328,28 +5662,6 @@ function TossAdBanner({
       data-ad-placement={placement}
       ref={containerRef}
     />
-  );
-}
-
-function TossInterstitialAdPlaceholder({
-  adId,
-  placement,
-}: {
-  adId: string;
-  placement: string;
-}) {
-  return (
-    <article aria-label="토스 전면 배너 광고 영역" className="toss-interstitial-placeholder">
-      <div className="toss-ad-placeholder-top">
-        <span className="toss-ad-badge">전면 배너</span>
-        <span className="toss-ad-caption">{placement}</span>
-      </div>
-      <strong>업로드 완료 후 토스 전면 배너 광고</strong>
-      <p>
-        앱인토스 전면 배너 광고 아이디가 연결됐어요.
-        <code className="toss-ad-id">{adId}</code>
-      </p>
-    </article>
   );
 }
 
