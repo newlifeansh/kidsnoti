@@ -5,7 +5,7 @@ export default defineConfig({
   brand: {
     displayName: "알림장쏙",
     primaryColor: "#1B89DB",
-    icon: "/icon.png",
+    icon: "https://static.toss.im/appsintoss/35527/daea770f-75ce-4243-92d2-a5c798b4bcbe.png",
   },
   web: {
     host: "localhost",
