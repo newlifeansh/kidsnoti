@@ -79,6 +79,7 @@ type Screen =
   | "bug-events";
 
 let hasInitializedTossAds = false;
+let tossAdsInitializePromise: Promise<void> | null = null;
 
 function canUseTossAds() {
   try {
@@ -86,6 +87,38 @@ function canUseTossAds() {
   } catch {
     return false;
   }
+}
+
+function initializeTossAds() {
+  if (hasInitializedTossAds) {
+    return Promise.resolve();
+  }
+
+  if (tossAdsInitializePromise) {
+    return tossAdsInitializePromise;
+  }
+
+  tossAdsInitializePromise = new Promise<void>((resolve, reject) => {
+    try {
+      TossAds.initialize({
+        callbacks: {
+          onInitialized: () => {
+            hasInitializedTossAds = true;
+            resolve();
+          },
+          onInitializationFailed: (error) => {
+            tossAdsInitializePromise = null;
+            reject(error);
+          },
+        },
+      });
+    } catch (error) {
+      tossAdsInitializePromise = null;
+      reject(error);
+    }
+  });
+
+  return tossAdsInitializePromise;
 }
 
 interface Child {
@@ -283,7 +316,7 @@ const initialEvents: CalendarEventItem[] = [];
 
 const APP_STATE_STORAGE_KEY = "alimjang-ssok-app-state-v1";
 const ONBOARDING_GUIDE_DISMISSED_KEY = "alimjangssok.onboardingGuideDismissed";
-const ANALYZE_TIMEOUT_MS = 90000;
+const ANALYZE_TIMEOUT_MS = 180000;
 const HOME_SHORTCUT_PROMPT_PENDING_KEY = "alimjangssok.home-shortcut.prompt-pending";
 const HOME_SHORTCUT_PROMPT_SEEN_KEY = "alimjangssok.home-shortcut.prompt-seen";
 const HOME_SHORTCUT_PROMPT_DISMISSED_KEY = "alimjangssok.home-shortcut.prompt-dismissed";
@@ -2266,38 +2299,12 @@ function App() {
     });
   };
 
-  const isCompactHomeHeader = effectiveScreen === "home";
-  const showSettingsButton = effectiveScreen !== "home" && effectiveScreen !== "settings";
-
   return (
     <div className="app-shell">
-      {showChrome && (
-        <header className={isCompactHomeHeader ? "app-header compact" : "app-header"}>
-          {isCompactHomeHeader ? null : (
-            <div className="app-header-copy">
-              <h1>알림장쏙</h1>
-              <p>사진 또는 파일을 업로드하여 한번에 알림장을 정리해요.</p>
-            </div>
-          )}
-          {showSettingsButton ? (
-            <button
-              aria-label="설정"
-              className="top-settings-button"
-              onClick={() => setScreen("settings")}
-              type="button"
-            >
-              <SettingsTabIcon size={22} />
-            </button>
-          ) : null}
-        </header>
-      )}
-
       <main
         className={
           showChrome
-            ? isCompactHomeHeader
-              ? "screen with-nav compact-header"
-              : "screen with-nav"
+            ? "screen with-nav"
             : "screen"
         }
       >
@@ -3004,14 +3011,25 @@ function UploadScreen({
     }
 
     const selectedFiles = Array.from(event.target.files ?? []);
-    const imageFiles = selectedFiles.filter((file) => ["image/jpeg", "image/png"].includes(file.type));
+    const imageFiles = selectedFiles
+      .filter((file) => ["image/jpeg", "image/png"].includes(file.type))
+      .slice(0, remainingSlots);
     const pdfFiles = selectedFiles.filter((file) => file.type === "application/pdf");
+    const pdfSlots = Math.max(remainingSlots - imageFiles.length, 0);
 
     try {
       setIsConvertingPdf(pdfFiles.length > 0);
-      const convertedPdfImages = pdfFiles.length > 0 ? await convertPdfFilesToImages(pdfFiles) : [];
+      const convertedPdfResult = pdfFiles.length > 0
+        ? await convertPdfFilesToImages(pdfFiles, pdfSlots)
+        : { files: [], totalPageCount: 0 };
+      const convertedPdfImages = convertedPdfResult.files;
       const optimizedImageFiles = await optimizeUploadImages(imageFiles);
-      const uploadFiles = [...optimizedImageFiles, ...convertedPdfImages];
+      const optimizedPdfImages = await optimizeUploadImages(convertedPdfImages);
+      const uploadFiles = [...optimizedImageFiles, ...optimizedPdfImages];
+      const truncatedPdfPageCount = Math.max(
+        convertedPdfResult.totalPageCount - convertedPdfImages.length,
+        0,
+      );
 
       if (uploadFiles.length > 0) {
         onTrackEvent({
@@ -3025,12 +3043,24 @@ function UploadScreen({
             pdfCount: pdfFiles.length,
             originalImageBytes: imageFiles.reduce((sum, file) => sum + file.size, 0),
             optimizedImageBytes: optimizedImageFiles.reduce((sum, file) => sum + file.size, 0),
+            convertedPdfPageCount: convertedPdfImages.length,
+            totalPdfPageCount: convertedPdfResult.totalPageCount,
+            truncatedPdfPageCount,
+            convertedPdfBytes: optimizedPdfImages.reduce((sum, file) => sum + file.size, 0),
             fileTypes: uploadFiles.map((file) => file.type),
           },
         });
-        onAddImages(uploadFiles.slice(0, remainingSlots));
-        if (uploadFiles.length > remainingSlots) {
-          window.alert(`파일은 최대 ${MAX_UPLOAD_FILES}개까지만 올릴 수 있어요.`);
+        onAddImages(uploadFiles);
+        if (truncatedPdfPageCount > 0) {
+          const pdfAttachmentMessage = convertedPdfImages.length > 0
+            ? `PDF는 앞 ${convertedPdfImages.length}장만 첨부했어요.`
+            : "이미 첨부된 파일이 3장이라 PDF는 첨부하지 못했어요.";
+
+          window.alert(
+            `첨부파일은 최대 ${MAX_UPLOAD_FILES}장까지 업로드돼요.\n${pdfAttachmentMessage} ${MAX_UPLOAD_FILES}장 이후 내용은 스크린샷으로 별도로 업로드해주세요.`,
+          );
+        } else if (selectedFiles.length > uploadFiles.length) {
+          window.alert(`첨부파일은 최대 ${MAX_UPLOAD_FILES}장까지 업로드돼요.`);
         }
       }
     } catch (error) {
@@ -3125,7 +3155,7 @@ function UploadScreen({
 
 function AnalyzingScreen() {
   const steps = useMemo(
-    () => ["알림장을 읽고 있어요", "날짜와 준비물을 찾고 있어요", "일정과 To-do를 나누고 있어요"],
+    () => ["알림장을 읽고 있어요", "날짜와 준비물을 찾고 있어요", "해야할 일을 정리하고 있어요"],
     [],
   );
   const [currentStep, setCurrentStep] = useState(0);
@@ -5273,46 +5303,40 @@ function TossAdBanner({
     let isMounted = true;
     let banner: ReturnType<typeof TossAds.attachBanner> | null = null;
 
-    try {
-      setStatus("loading");
+    void (async () => {
+      try {
+        setStatus("loading");
 
-      if (!hasInitializedTossAds) {
-        TossAds.initialize({
+        await initializeTossAds();
+        if (!isMounted) return;
+
+        banner = TossAds.attachBanner(adId, container, {
+          theme: "light",
+          tone: "grey",
+          variant: "card",
           callbacks: {
-            onInitializationFailed: (error) => {
-              console.warn("토스 광고 초기화에 실패했어요.", error);
+            onAdRendered: () => {
+              if (isMounted) setStatus("visible");
+            },
+            onNoFill: () => {
+              if (isMounted) setStatus("hidden");
+            },
+            onAdFailedToRender: (payload) => {
+              console.warn("토스 배너 광고 렌더링에 실패했어요.", {
+                candidate,
+                placement,
+                adId,
+                error: payload.error,
+              });
+              if (isMounted) setStatus("hidden");
             },
           },
         });
-        hasInitializedTossAds = true;
+      } catch (error) {
+        console.warn("토스 배너 광고를 불러오지 못했어요.", { candidate, placement, adId, error });
+        if (isMounted) setStatus("hidden");
       }
-
-      banner = TossAds.attachBanner(adId, container, {
-        theme: "light",
-        tone: "grey",
-        variant: "card",
-        callbacks: {
-          onAdRendered: () => {
-            if (isMounted) setStatus("visible");
-          },
-          onNoFill: () => {
-            if (isMounted) setStatus("hidden");
-          },
-          onAdFailedToRender: (payload) => {
-            console.warn("토스 배너 광고 렌더링에 실패했어요.", {
-              candidate,
-              placement,
-              adId,
-              error: payload.error,
-            });
-            if (isMounted) setStatus("hidden");
-          },
-        },
-      });
-    } catch (error) {
-      console.warn("토스 배너 광고를 불러오지 못했어요.", { candidate, placement, adId, error });
-      setStatus("hidden");
-    }
+    })();
 
     return () => {
       isMounted = false;
