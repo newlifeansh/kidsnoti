@@ -813,8 +813,15 @@ function getUserFacingServiceErrorMessage(error: unknown, fallback: string) {
     message.includes("서비스 연결 설정") ||
     message.includes("ReactNativeWebView") ||
     message.includes("browser environment") ||
+    message.includes("CertificateRequired") ||
+    message.includes("SendRequest") ||
+    message.includes("generate-token") ||
+    message.includes("apps-in-toss-api") ||
+    message.includes("토스 로그인 API 인증") ||
     lowerMessage.includes("supabase") ||
     lowerMessage.includes("failed to fetch") ||
+    lowerMessage.includes("client error") ||
+    lowerMessage.includes("connection error") ||
     lowerMessage.includes("fetch");
 
   if (isInternalConfigurationError) {

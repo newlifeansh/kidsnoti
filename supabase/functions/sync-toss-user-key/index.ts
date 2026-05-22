@@ -21,6 +21,13 @@ interface TossApiFail {
   };
 }
 
+class PublicFunctionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PublicFunctionError";
+  }
+}
+
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -57,8 +64,10 @@ Deno.serve(async (request) => {
 
     return jsonResponse({ userKey: String(userKey) });
   } catch (error) {
+    console.error("sync-toss-user-key failed", serializeErrorForLog(error));
+
     return jsonResponse(
-      { message: error instanceof Error ? error.message : "토스 userKey 저장에 실패했어요." },
+      { message: toPublicErrorMessage(error) },
       { status: 500 },
     );
   }
@@ -68,7 +77,7 @@ async function exchangeAuthorizationCode(
   authorizationCode: string,
   referrer: "DEFAULT" | "SANDBOX",
 ) {
-  const response = await fetch(`${requireEnv("APPS_IN_TOSS_API_BASE_URL")}/api-partner/v1/apps-in-toss/user/oauth2/generate-token`, {
+  const response = await fetchTossApi("/api-partner/v1/apps-in-toss/user/oauth2/generate-token", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -79,27 +88,83 @@ async function exchangeAuthorizationCode(
     }),
   });
 
-  const body = await response.json() as TossApiSuccess<TokenExchangeSuccess> & TossApiFail;
+  const body = await readTossApiResponse<TokenExchangeSuccess>(response);
   if (!response.ok || body.resultType !== "SUCCESS" || !body.success?.accessToken) {
-    throw new Error(body.error?.reason ?? "토스 accessToken 교환에 실패했어요.");
+    throw new PublicFunctionError(body.error?.reason ?? "토스 accessToken 교환에 실패했어요.");
   }
 
   return body.success;
 }
 
 async function fetchTossUserKey(accessToken: string) {
-  const response = await fetch(`${requireEnv("APPS_IN_TOSS_API_BASE_URL")}/api-partner/v1/apps-in-toss/user/oauth2/login-me`, {
+  const response = await fetchTossApi("/api-partner/v1/apps-in-toss/user/oauth2/login-me", {
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
   });
 
-  const body = await response.json() as TossApiSuccess<{ userKey?: string | number }> & TossApiFail;
+  const body = await readTossApiResponse<{ userKey?: string | number }>(response);
   if (!response.ok || body.resultType !== "SUCCESS" || body.success?.userKey == null) {
-    throw new Error(body.error?.reason ?? "토스 userKey 조회에 실패했어요.");
+    throw new PublicFunctionError(body.error?.reason ?? "토스 userKey 조회에 실패했어요.");
   }
 
   return body.success.userKey;
+}
+
+async function fetchTossApi(path: string, init: RequestInit) {
+  const client = createTossMutualTlsClient();
+  const requestInit = client ? { ...init, client } as RequestInit : init;
+  return fetch(`${requireEnv("APPS_IN_TOSS_API_BASE_URL")}${path}`, requestInit);
+}
+
+async function readTossApiResponse<T>(response: Response) {
+  try {
+    return await response.json() as TossApiSuccess<T> & TossApiFail;
+  } catch {
+    return {
+      resultType: "FAIL",
+      error: {
+        reason: "토스 로그인 API 응답을 확인하지 못했어요.",
+      },
+    } satisfies TossApiFail;
+  }
+}
+
+function createTossMutualTlsClient() {
+  const cert = readPemSecret("APPS_IN_TOSS_MTLS_CERT_PEM", "APPS_IN_TOSS_MTLS_CERT_BASE64");
+  const key = readPemSecret("APPS_IN_TOSS_MTLS_KEY_PEM", "APPS_IN_TOSS_MTLS_KEY_BASE64");
+
+  if (!cert && !key) {
+    return undefined;
+  }
+
+  if (!cert || !key) {
+    throw new PublicFunctionError("토스 로그인 API 인증서 설정을 확인해주세요.");
+  }
+
+  const deno = Deno as typeof Deno & {
+    createHttpClient?: (options: { cert: string; key: string }) => unknown;
+  };
+
+  if (typeof deno.createHttpClient !== "function") {
+    throw new PublicFunctionError("토스 로그인 API 인증서 연결을 준비하지 못했어요.");
+  }
+
+  return deno.createHttpClient({ cert, key });
+}
+
+function readPemSecret(pemName: string, base64Name: string) {
+  const pemValue = Deno.env.get(pemName);
+  if (pemValue) return pemValue.replace(/\\n/g, "\n");
+
+  const base64Value = Deno.env.get(base64Name);
+  if (!base64Value) return undefined;
+
+  try {
+    return atob(base64Value).replace(/\\n/g, "\n");
+  } catch {
+    throw new PublicFunctionError(`${base64Name} 값을 읽지 못했어요.`);
+  }
 }
 
 async function getAuthenticatedUserId(request: Request) {
@@ -129,4 +194,50 @@ function requireEnv(name: string) {
     throw new Error(`${name} 환경변수가 필요해요.`);
   }
   return value;
+}
+
+function toPublicErrorMessage(error: unknown) {
+  const fallback = "토스 로그인 연결을 완료하지 못했어요. 잠시 후 다시 시도해주세요.";
+
+  if (error instanceof PublicFunctionError) {
+    const lowerMessage = error.message.toLowerCase();
+    if (
+      error.message.includes("CertificateRequired") ||
+      error.message.includes("SendRequest") ||
+      lowerMessage.includes("connection error") ||
+      lowerMessage.includes("client error")
+    ) {
+      return fallback;
+    }
+
+    return error.message;
+  }
+
+  if (error instanceof Error) {
+    const lowerMessage = error.message.toLowerCase();
+    if (
+      error.message.includes("CertificateRequired") ||
+      error.message.includes("SendRequest") ||
+      error.message.includes("apps-in-toss-api") ||
+      lowerMessage.includes("connection error") ||
+      lowerMessage.includes("client error") ||
+      lowerMessage.includes("fetch")
+    ) {
+      return fallback;
+    }
+  }
+
+  return fallback;
+}
+
+function serializeErrorForLog(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      message: error.message,
+      name: error.name,
+      stack: error.stack,
+    };
+  }
+
+  return { message: String(error) };
 }
