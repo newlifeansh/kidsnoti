@@ -265,6 +265,15 @@ function toDiagnosticError(error: unknown) {
     };
   }
 
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    return {
+      code: typeof record.code === "string" ? record.code : "SYNC_TOSS_USER_KEY_FAILED",
+      message: stringifyUnknownError(error),
+      name: typeof record.name === "string" ? record.name : "ObjectError",
+    };
+  }
+
   return {
     code: "SYNC_TOSS_USER_KEY_FAILED",
     message: String(error),
@@ -283,5 +292,28 @@ function serializeErrorForLog(error: unknown) {
     };
   }
 
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    return {
+      code: record.code,
+      details: record.details,
+      hint: record.hint,
+      message: stringifyUnknownError(error),
+      name: record.name,
+      status: record.status,
+    };
+  }
+
   return { message: String(error) };
+}
+
+function stringifyUnknownError(error: unknown) {
+  if (typeof error === "string") return error;
+  if (!error || typeof error !== "object") return String(error);
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
 }

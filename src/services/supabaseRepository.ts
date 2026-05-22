@@ -1267,8 +1267,23 @@ async function readFunctionError(response: Response) {
       debugName?: string;
       message?: string;
     };
-    return new SupabaseFunctionError(body.message ?? "요청 처리에 실패했어요.", body);
+    return new SupabaseFunctionError(body.message ?? "요청 처리에 실패했어요.", {
+      code: typeof body.code === "string" ? body.code : undefined,
+      debugMessage: typeof body.debugMessage === "string" ? body.debugMessage : stringifyFunctionErrorValue(body.debugMessage),
+      debugName: typeof body.debugName === "string" ? body.debugName : undefined,
+    });
   } catch {
     return new SupabaseFunctionError("요청 처리에 실패했어요.");
+  }
+}
+
+function stringifyFunctionErrorValue(value: unknown) {
+  if (value == null) return undefined;
+  if (typeof value === "string") return value;
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
   }
 }
