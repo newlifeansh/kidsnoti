@@ -204,6 +204,9 @@ function toPublicErrorMessage(error: unknown) {
     if (
       error.message.includes("CertificateRequired") ||
       error.message.includes("SendRequest") ||
+      error.message.includes("invalid_grant") ||
+      error.message.includes("authorization_code") ||
+      error.message.includes("clientId") ||
       lowerMessage.includes("connection error") ||
       lowerMessage.includes("client error")
     ) {
@@ -219,6 +222,9 @@ function toPublicErrorMessage(error: unknown) {
       error.message.includes("CertificateRequired") ||
       error.message.includes("SendRequest") ||
       error.message.includes("apps-in-toss-api") ||
+      error.message.includes("invalid_grant") ||
+      error.message.includes("authorization_code") ||
+      error.message.includes("clientId") ||
       lowerMessage.includes("connection error") ||
       lowerMessage.includes("client error") ||
       lowerMessage.includes("fetch")

@@ -818,6 +818,9 @@ function getUserFacingServiceErrorMessage(error: unknown, fallback: string) {
     message.includes("generate-token") ||
     message.includes("apps-in-toss-api") ||
     message.includes("토스 로그인 API 인증") ||
+    message.includes("invalid_grant") ||
+    message.includes("authorization_code") ||
+    message.includes("clientId") ||
     lowerMessage.includes("supabase") ||
     lowerMessage.includes("failed to fetch") ||
     lowerMessage.includes("client error") ||
