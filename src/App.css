@@ -2652,8 +2652,13 @@
   padding-bottom: max(22px, env(safe-area-inset-bottom));
 }
 
+.select-sheet-header {
+  align-items: flex-start;
+}
+
 .select-sheet-header > div {
   display: flex;
+  width: calc(100% - 52px);
   min-width: 0;
   flex: 1;
   flex-direction: column;
@@ -2663,11 +2668,18 @@
 .select-sheet-header h2,
 .select-sheet-header p {
   display: block;
+  width: 100%;
+  flex: none;
+  white-space: normal;
 }
 
 .select-sheet-header p {
   margin-top: 0;
   line-height: 1.45;
+}
+
+.select-sheet-header button {
+  flex: 0 0 36px;
 }
 
 .select-option-list {
