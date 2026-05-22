@@ -1,4 +1,5 @@
 import {
+  appLogin,
   closeView,
   loadFullScreenAd,
   setIosSwipeGestureEnabled,
@@ -48,11 +49,13 @@ import {
   getSupabaseFamilyData,
   getSupabaseNotificationPreferences,
   getSupabaseSession,
+  getSupabaseTossUserKey,
   removeSupabaseFamilyMember,
   saveSupabaseNoticeResult,
   saveSupabaseNotificationPreferences,
   setSupabaseProfileDisplayName,
   subscribeSupabaseAuth,
+  syncSupabaseTossUserKey,
   type SupabaseFamilyData,
   updateSupabaseChild,
   updateSupabaseTodo,
@@ -356,6 +359,8 @@ const APP_STATE_STORAGE_KEY = "alimjang-ssok-app-state-v1";
 const ONBOARDING_GUIDE_DISMISSED_KEY = "alimjangssok.onboardingGuideDismissed";
 const ANALYZE_TIMEOUT_MS = 180000;
 const ANALYSIS_FULL_SCREEN_AD_ID = "ait.v2.live.31cd218812e44ce0";
+const FULL_SCREEN_AD_LOAD_TIMEOUT_MS = 8000;
+const FULL_SCREEN_AD_SHOW_TIMEOUT_MS = 20000;
 const HOME_SHORTCUT_PROMPT_PENDING_KEY = "alimjangssok.home-shortcut.prompt-pending";
 const HOME_SHORTCUT_PROMPT_SEEN_KEY = "alimjangssok.home-shortcut.prompt-seen";
 const HOME_SHORTCUT_PROMPT_DISMISSED_KEY = "alimjangssok.home-shortcut.prompt-dismissed";
@@ -1024,6 +1029,9 @@ function App() {
     useState<LocalNotificationPreferenceState>(loadLocalNotificationPreferenceState);
   const [isSubmittingNotificationConsent, setIsSubmittingNotificationConsent] = useState(false);
   const [notificationConsentMessage, setNotificationConsentMessage] = useState<string | null>(null);
+  const [tossUserKey, setTossUserKey] = useState<string | null>(null);
+  const [isConnectingTossLogin, setIsConnectingTossLogin] = useState(false);
+  const [tossLoginStatusMessage, setTossLoginStatusMessage] = useState<string | null>(null);
   const [isExitConfirmOpen, setIsExitConfirmOpen] = useState(false);
   const hasPersistedChildren = persistedState.children.length > 0;
   const shouldBootstrapDemoFamily =
@@ -1050,6 +1058,15 @@ function App() {
     todoCount: initialAppState.todos.length,
     calendarEventCount: initialAppState.calendarEvents.length,
     selectedFileCount: 0,
+  });
+  const analysisFullScreenAdRef = useRef<{
+    status: "idle" | "loading" | "loaded" | "showing";
+    cleanup: (() => void) | null;
+    promise: Promise<void> | null;
+  }>({
+    status: "idle",
+    cleanup: null,
+    promise: null,
   });
 
   const effectiveScreen =
@@ -1086,7 +1103,7 @@ function App() {
 
     return toErrorCode(step);
   };
-  const trackAppEvent = (
+  const trackAppEvent = useCallback((
     input: Omit<BugEventInput, "screen" | "metadata"> & {
       metadata?: Record<string, unknown>;
     },
@@ -1102,7 +1119,7 @@ function App() {
         ...input.metadata,
       },
     });
-  };
+  }, []);
 
   const showProcessingError = (
     error: unknown,
@@ -1189,61 +1206,150 @@ function App() {
     return runWithTimeout(promise, ANALYZE_TIMEOUT_MS, "ANALYZE_TIMEOUT");
   };
 
+  const resetAnalysisFullScreenAd = () => {
+    analysisFullScreenAdRef.current.cleanup?.();
+    analysisFullScreenAdRef.current = {
+      status: "idle",
+      cleanup: null,
+      promise: null,
+    };
+  };
+
+  const preloadAnalysisFullScreenAd = (trigger: "file_selected" | "analyze_click") => {
+    const current = analysisFullScreenAdRef.current;
+    if (current.status === "loaded") {
+      return Promise.resolve();
+    }
+    if (current.status === "loading" && current.promise) {
+      return current.promise;
+    }
+    if (!canUseFullScreenAd()) {
+      trackAppEvent({
+        eventType: "fullscreen_ad_unsupported",
+        severity: "info",
+        step: "analyze_upload.fullscreen_ad",
+        message: "현재 환경에서 전면 광고 브릿지를 사용할 수 없어요.",
+        metadata: {
+          adGroupId: ANALYSIS_FULL_SCREEN_AD_ID,
+          trigger,
+        },
+      });
+      return Promise.resolve();
+    }
+
+    trackAppEvent({
+      eventType: "fullscreen_ad_load_started",
+      severity: "info",
+      step: "analyze_upload.fullscreen_ad",
+      message: "AI 분석 전 전면 광고를 미리 불러오고 있어요.",
+      metadata: {
+        adGroupId: ANALYSIS_FULL_SCREEN_AD_ID,
+        trigger,
+      },
+    });
+
+    let cleanup = () => undefined;
+    const loadPromise = runWithTimeout(
+      new Promise<void>((resolve, reject) => {
+        cleanup = loadFullScreenAd({
+          options: { adGroupId: ANALYSIS_FULL_SCREEN_AD_ID },
+          onEvent: (event) => {
+            if (event.type === "loaded") {
+              cleanup();
+              analysisFullScreenAdRef.current = {
+                status: "loaded",
+                cleanup: null,
+                promise: null,
+              };
+              trackAppEvent({
+                eventType: "fullscreen_ad_loaded",
+                severity: "info",
+                step: "analyze_upload.fullscreen_ad",
+                message: "AI 분석 전 전면 광고를 불러왔어요.",
+                metadata: {
+                  adGroupId: ANALYSIS_FULL_SCREEN_AD_ID,
+                  trigger,
+                },
+              });
+              resolve();
+            }
+          },
+          onError: (error) => {
+            cleanup();
+            reject(error);
+          },
+        });
+      }),
+      FULL_SCREEN_AD_LOAD_TIMEOUT_MS,
+      "FULLSCREEN_AD_LOAD_TIMEOUT",
+    ).catch((error) => {
+      cleanup();
+      analysisFullScreenAdRef.current = {
+        status: "idle",
+        cleanup: null,
+        promise: null,
+      };
+      trackAppEvent({
+        eventType: "fullscreen_ad_load_failed",
+        severity: "warning",
+        step: "analyze_upload.fullscreen_ad",
+        message: error instanceof Error ? error.message : "전면 광고 로드 실패",
+        metadata: {
+          adGroupId: ANALYSIS_FULL_SCREEN_AD_ID,
+          trigger,
+          error: serializeErrorForLog(error),
+        },
+      });
+      throw error;
+    });
+
+    analysisFullScreenAdRef.current = {
+      status: "loading",
+      cleanup,
+      promise: loadPromise,
+    };
+
+    return loadPromise;
+  };
+
   const showAnalysisFullScreenAd = async () => {
     if (!canUseFullScreenAd()) {
       return;
     }
 
     try {
-      trackAppEvent({
-        eventType: "fullscreen_ad_load_started",
-        severity: "info",
-        step: "analyze_upload.fullscreen_ad",
-        message: "AI 분석 전 전면 광고를 불러오고 있어요.",
-        metadata: {
-          adGroupId: ANALYSIS_FULL_SCREEN_AD_ID,
-        },
-      });
+      await preloadAnalysisFullScreenAd("analyze_click");
 
       await runWithTimeout(
         new Promise<void>((resolve, reject) => {
           let cleanup = () => undefined;
-          cleanup = loadFullScreenAd({
-            options: { adGroupId: ANALYSIS_FULL_SCREEN_AD_ID },
-            onEvent: (event) => {
-              if (event.type === "loaded") {
-                cleanup();
-                resolve();
-              }
-            },
-            onError: (error) => {
-              cleanup();
-              reject(error);
-            },
-          });
-        }),
-        5000,
-        "FULLSCREEN_AD_LOAD_TIMEOUT",
-      );
-
-      await runWithTimeout(
-        new Promise<void>((resolve, reject) => {
-          let cleanup = () => undefined;
+          analysisFullScreenAdRef.current.status = "showing";
           cleanup = showFullScreenAd({
             options: { adGroupId: ANALYSIS_FULL_SCREEN_AD_ID },
             onEvent: (event) => {
+              trackAppEvent({
+                eventType: `fullscreen_ad_${event.type}`,
+                severity: event.type === "failedToShow" ? "warning" : "info",
+                step: "analyze_upload.fullscreen_ad",
+                message: `AI 분석 전 전면 광고 이벤트: ${event.type}`,
+                metadata: {
+                  adGroupId: ANALYSIS_FULL_SCREEN_AD_ID,
+                },
+              });
               if (event.type === "dismissed" || event.type === "failedToShow") {
                 cleanup();
+                resetAnalysisFullScreenAd();
                 resolve();
               }
             },
             onError: (error) => {
               cleanup();
+              resetAnalysisFullScreenAd();
               reject(error);
             },
           });
         }),
-        15000,
+        FULL_SCREEN_AD_SHOW_TIMEOUT_MS,
         "FULLSCREEN_AD_SHOW_TIMEOUT",
       );
 
@@ -1257,6 +1363,7 @@ function App() {
         },
       });
     } catch (error) {
+      resetAnalysisFullScreenAd();
       console.warn("AI 분석 전 전면 광고를 표시하지 못했어요.", error);
       trackAppEvent({
         eventType: "fullscreen_ad_skipped",
@@ -1312,10 +1419,27 @@ function App() {
     return childIdMap;
   };
 
-  const syncNotificationPreferencesSnapshot = (next: LocalNotificationPreferenceState) => {
+  const syncNotificationPreferencesSnapshot = useCallback((next: LocalNotificationPreferenceState) => {
     setNotificationPreferencesSnapshot(next);
     persistLocalNotificationPreferenceState(next);
-  };
+  }, []);
+
+  const refreshTossLoginState = useCallback(async () => {
+    if (!isSupabaseConfigured) {
+      setTossUserKey(null);
+      return null;
+    }
+
+    try {
+      await connectAppsInTossUser();
+      const nextTossUserKey = await getSupabaseTossUserKey();
+      setTossUserKey(nextTossUserKey);
+      return nextTossUserKey;
+    } catch {
+      setTossUserKey(null);
+      return null;
+    }
+  }, []);
 
   useEffect(() => {
     window.scrollTo({ top: 0 });
@@ -1466,7 +1590,7 @@ function App() {
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [syncNotificationPreferencesSnapshot]);
 
   useEffect(() => {
     bugContextRef.current = {
@@ -1477,6 +1601,19 @@ function App() {
       selectedFileCount: selectedImages.length,
     };
   }, [calendarEvents.length, children.length, screen, selectedImages.length, todos.length]);
+
+  useEffect(() => {
+    if (effectiveScreen === "upload" && selectedImages.length > 0) {
+      void preloadAnalysisFullScreenAd("file_selected").catch(() => undefined);
+      return;
+    }
+
+    if (selectedImages.length === 0 && analysisFullScreenAdRef.current.status !== "showing") {
+      resetAnalysisFullScreenAd();
+    }
+    // preloadAnalysisFullScreenAd reads fresh refs and event context on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveScreen, selectedImages.length]);
 
   useEffect(() => {
     const handleWindowError = (event: ErrorEvent) => {
@@ -1588,6 +1725,7 @@ function App() {
 
         if (session) {
           setCurrentUserId(session.user.id);
+          void refreshTossLoginState();
           const inviteCode = getInviteCodeFromLocation();
           if (inviteCode) {
             const inviteDisplayName = getInviteDisplayNameFromLocation();
@@ -1648,6 +1786,7 @@ function App() {
     const unsubscribe = subscribeSupabaseAuth((session) => {
       if (session) {
         setCurrentUserId(session.user.id);
+        void refreshTossLoginState();
         void getSupabaseFamilyData()
           .then((response) => {
             if (!response) {
@@ -1671,6 +1810,7 @@ function App() {
           });
       } else {
         setCurrentUserId(null);
+        setTossUserKey(null);
       }
     });
 
@@ -1678,7 +1818,68 @@ function App() {
       ignore = true;
       unsubscribe();
     };
-  }, [acceptFamilyInvite, forceFirstVisitPreview, hasPersistedChildren, shouldBootstrapDemoFamily]);
+  }, [
+    acceptFamilyInvite,
+    forceFirstVisitPreview,
+    hasPersistedChildren,
+    refreshTossLoginState,
+    shouldBootstrapDemoFamily,
+    trackAppEvent,
+  ]);
+
+  const connectTossLogin = useCallback(async () => {
+    setIsConnectingTossLogin(true);
+    setTossLoginStatusMessage(null);
+
+    try {
+      await connectAppsInTossUser();
+
+      const loginResult = await appLogin() as
+        | {
+            authorizationCode?: string;
+            authorization_code?: string;
+            referrer?: "DEFAULT" | "SANDBOX" | null;
+          }
+        | undefined;
+
+      const authorizationCode =
+        typeof loginResult?.authorizationCode === "string"
+          ? loginResult.authorizationCode
+          : typeof loginResult?.authorization_code === "string"
+          ? loginResult.authorization_code
+          : "";
+      const referrer = loginResult?.referrer === "SANDBOX" ? "SANDBOX" : "DEFAULT";
+
+      if (!authorizationCode) {
+        throw new Error("토스 로그인 인증 코드를 받지 못했어요.");
+      }
+
+      const syncedTossUserKey = await syncSupabaseTossUserKey(authorizationCode, referrer);
+      setTossUserKey(syncedTossUserKey);
+      setTossLoginStatusMessage("토스 로그인 연결을 완료했어요.");
+      trackAppEvent({
+        eventType: "toss_login_connected",
+        severity: "info",
+        step: "toss_login.connect",
+        message: "토스 로그인 연결을 완료했어요.",
+      });
+    } catch (error) {
+      setTossLoginStatusMessage(
+        error instanceof Error ? error.message : "토스 로그인 연결에 실패했어요.",
+      );
+      trackAppEvent({
+        eventType: "toss_login_connect_failed",
+        severity: "warning",
+        step: "toss_login.connect",
+        message: error instanceof Error ? error.message : "토스 로그인 연결 실패",
+        metadata: {
+          error: serializeErrorForLog(error),
+        },
+      });
+    } finally {
+      setIsConnectingTossLogin(false);
+    }
+  }, [trackAppEvent]);
 
   const addChild = async (child: Child) => {
     try {
@@ -2505,6 +2706,10 @@ function App() {
     });
   };
 
+  const handleNotificationPreferencesUpdated = (preferences: NotificationPreferences) => {
+    syncNotificationPreferencesSnapshot(notificationPreferencesToLocalState(preferences));
+  };
+
   return (
     <div className="app-shell">
       <main
@@ -2606,22 +2811,24 @@ function App() {
             children={children}
             currentUserId={currentUserId}
             familyMembers={familyMembers}
+            isConnectingTossLogin={isConnectingTossLogin}
             onDeleteChild={deleteChild}
+            onConnectTossLogin={() => {
+              void connectTossLogin();
+            }}
             onEditChild={editChild}
             onNavigate={setScreen}
             onRemoveMember={removeFamilyMember}
             onShareInvite={() => setShowInviteRoleSheet(true)}
+            tossLoginStatusMessage={tossLoginStatusMessage}
+            tossUserKey={tossUserKey}
           />
         )}
         {effectiveScreen === "notifications" && (
           <NotificationsScreen
             consentSnapshot={notificationPreferencesSnapshot}
-            onPreferencesUpdated={(preferences) => {
-              syncNotificationPreferencesSnapshot(notificationPreferencesToLocalState(preferences));
-            }}
-            onSnapshotUpdated={(state) => {
-              syncNotificationPreferencesSnapshot(state);
-            }}
+            onPreferencesUpdated={handleNotificationPreferencesUpdated}
+            onSnapshotUpdated={syncNotificationPreferencesSnapshot}
             onRequestConsentPrompt={(draft) => {
               openNotificationConsentPrompt("settings-toggle", draft);
             }}
@@ -4099,23 +4306,32 @@ function SettingsScreen({
   children,
   currentUserId,
   familyMembers,
+  isConnectingTossLogin,
   onDeleteChild,
+  onConnectTossLogin,
   onEditChild,
   onNavigate,
   onRemoveMember,
   onShareInvite,
+  tossLoginStatusMessage,
+  tossUserKey,
 }: {
   children: Child[];
   currentUserId: string | null;
   familyMembers: FamilyMember[];
+  isConnectingTossLogin: boolean;
   onDeleteChild: (child: Child) => void;
+  onConnectTossLogin: () => void;
   onEditChild: (child: Child) => void;
   onNavigate: (screen: Screen) => void;
   onRemoveMember: (userId: string) => void;
   onShareInvite: () => void;
+  tossLoginStatusMessage: string | null;
+  tossUserKey: string | null;
 }) {
   const [selectedChild, setSelectedChild] = useState<Child | null>(null);
   const canViewBugEvents = currentUserId !== null && OPERATOR_USER_IDS.has(currentUserId);
+  const isTossLoginConnected = Boolean(tossUserKey);
   const deleteChild = async (child: Child) => {
     setSelectedChild(null);
 
@@ -4163,6 +4379,20 @@ function SettingsScreen({
         <span>앱인토스 알림 설정</span>
         <ChevronRight size={18} />
       </button>
+      <button className="setting-link" onClick={onConnectTossLogin} type="button">
+        <AssetIcon src="/icons/settings.svg" size={20} />
+        <div className="setting-link-copy">
+          <span className="setting-link-title">토스 로그인 연결</span>
+          <span className="setting-link-caption">
+            {isTossLoginConnected
+              ? "알림 발송용 토스 계정 연결이 완료되었어요."
+              : "알림 발송을 위해 토스 계정을 연결해주세요."}
+          </span>
+        </div>
+        <span className={`status-chip ${isTossLoginConnected ? "success" : "warning"}`}>
+          {isConnectingTossLogin ? "연결 중" : isTossLoginConnected ? "연결 완료" : "연결 필요"}
+        </span>
+      </button>
       {canViewBugEvents ? (
         <button className="setting-link" onClick={() => onNavigate("bug-events")} type="button">
           <AlertCircle size={20} />
@@ -4196,6 +4426,12 @@ function SettingsScreen({
           </article>
         ))}
       </Card>
+      {tossLoginStatusMessage ? (
+        <div className="notice-box">
+          <AlertCircle size={18} />
+          <span>{tossLoginStatusMessage}</span>
+        </div>
+      ) : null}
       {selectedChild ? (
         <ChildDetailSheet
           child={selectedChild}
@@ -4594,6 +4830,7 @@ function NotificationsScreen({
         const prefs = await getSupabaseNotificationPreferences();
         if (!prefs || ignore) return;
 
+        const nextLocalState = notificationPreferencesToLocalState(prefs);
         setNotificationsEnabled(prefs.enabled);
         setPreparationDay(prefs.preparationDay);
         setPreparationTime(prefs.preparationTime);
@@ -4601,7 +4838,8 @@ function NotificationsScreen({
         setScheduleEnabled(prefs.scheduleEnabled);
         setScheduleDay(prefs.scheduleDay);
         setScheduleTime(prefs.scheduleTime);
-        persistLocalNotificationPreferenceState(notificationPreferencesToLocalState(prefs));
+        onSnapshotUpdated(nextLocalState);
+        persistLocalNotificationPreferenceState(nextLocalState);
       } catch {
         if (!ignore) {
           setNotificationSyncMessage("현재는 기기 설정으로 저장되고 있어요.");
@@ -4612,7 +4850,7 @@ function NotificationsScreen({
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [onSnapshotUpdated]);
 
   const applyNotificationPreferences = (prefs: NotificationPreferences) => {
     setNotificationsEnabled(prefs.enabled);
