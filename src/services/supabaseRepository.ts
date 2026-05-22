@@ -229,7 +229,7 @@ export async function connectAppsInTossUser(): Promise<AppsInTossSession> {
 }
 
 async function connectAppsInTossUserInternal(): Promise<AppsInTossSession> {
-  if (!supabase) throw new Error("Supabase 설정이 필요해요.");
+  if (!supabase) throw new Error("서비스 연결 설정이 필요해요.");
 
   const identity = await getAppsInTossIdentity();
   const currentSession = await getSupabaseSession();
@@ -703,7 +703,7 @@ export async function getSupabaseGoogleCalendarAuthUrl(): Promise<string> {
   const session = await getSupabaseSession();
   if (!session || !supabase) throw new Error("Supabase 로그인이 필요해요.");
 
-  if (!supabaseProjectUrl) throw new Error("Supabase 설정이 필요해요.");
+  if (!supabaseProjectUrl) throw new Error("서비스 연결 설정이 필요해요.");
 
   const endpoint = `${supabaseProjectUrl}/functions/v1/google-calendar-oauth`;
   const response = await fetch(endpoint, {
@@ -727,7 +727,7 @@ export async function getSupabaseGoogleCalendarAuthUrl(): Promise<string> {
 export async function syncSupabaseGoogleCalendarEvents(calendarEventIds?: string[]) {
   const session = await getSupabaseSession();
   if (!session || !supabase) throw new Error("Supabase 로그인이 필요해요.");
-  if (!supabaseProjectUrl) throw new Error("Supabase 설정이 필요해요.");
+  if (!supabaseProjectUrl) throw new Error("서비스 연결 설정이 필요해요.");
 
   const response = await fetch(`${supabaseProjectUrl}/functions/v1/sync-google-calendar-events`, {
     method: "POST",
@@ -751,7 +751,7 @@ export async function syncSupabaseTossUserKey(
 ) {
   const session = await getSupabaseSession();
   if (!session || !supabase) throw new Error("Supabase 로그인이 필요해요.");
-  if (!supabaseProjectUrl) throw new Error("Supabase 설정이 필요해요.");
+  if (!supabaseProjectUrl) throw new Error("서비스 연결 설정이 필요해요.");
 
   const response = await fetch(`${supabaseProjectUrl}/functions/v1/sync-toss-user-key`, {
     method: "POST",
@@ -1023,7 +1023,7 @@ async function ensureProfile(user: User, identity?: AppsInTossIdentity) {
 }
 
 async function ensureCurrentFamily(): Promise<string> {
-  if (!supabase) throw new Error("Supabase 설정이 필요해요.");
+  if (!supabase) throw new Error("서비스 연결 설정이 필요해요.");
 
   const current = await getSupabaseFamilyData();
   if (current) return current.family.id;
@@ -1037,7 +1037,7 @@ async function ensureCurrentFamily(): Promise<string> {
 }
 
 async function loadFamilyData(familyId: string): Promise<SupabaseFamilyData> {
-  if (!supabase) throw new Error("Supabase 설정이 필요해요.");
+  if (!supabase) throw new Error("서비스 연결 설정이 필요해요.");
 
   const [familyResult, membersResult, childrenResult, todosResult, eventsResult] = await Promise.all([
     supabase

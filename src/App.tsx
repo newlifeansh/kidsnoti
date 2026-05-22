@@ -804,6 +804,26 @@ function serializeErrorForLog(error: unknown) {
   return { message: String(error) };
 }
 
+function getUserFacingServiceErrorMessage(error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : "";
+  const lowerMessage = message.toLowerCase();
+  const isInternalConfigurationError =
+    message.includes("Supabase 설정") ||
+    message.includes("Supabase 로그인이") ||
+    message.includes("서비스 연결 설정") ||
+    message.includes("ReactNativeWebView") ||
+    message.includes("browser environment") ||
+    lowerMessage.includes("supabase") ||
+    lowerMessage.includes("failed to fetch") ||
+    lowerMessage.includes("fetch");
+
+  if (isInternalConfigurationError) {
+    return fallback;
+  }
+
+  return message || fallback;
+}
+
 type TodoDateBucket = "past" | "today" | "tomorrow" | "week" | "unscheduled" | "later";
 
 function getTodoDateBucket(dueDate: string): TodoDateBucket {
@@ -1832,9 +1852,13 @@ function App() {
     successMessage?: string;
   }) => {
     setIsConnectingTossLogin(true);
-    setTossLoginStatusMessage(null);
+    setTossLoginStatusMessage("토스 로그인 화면을 여는 중이에요.");
 
     try {
+      if (!isSupabaseConfigured) {
+        throw new Error("서비스 연결 설정이 필요해요.");
+      }
+
       await connectAppsInTossUser();
 
       const loginResult = await appLogin() as
@@ -1871,7 +1895,10 @@ function App() {
       });
     } catch (error) {
       setTossLoginStatusMessage(
-        error instanceof Error ? error.message : "토스 로그인 연결에 실패했어요.",
+        getUserFacingServiceErrorMessage(
+          error,
+          "토스 로그인 연결을 준비하지 못했어요. 잠시 후 다시 시도해주세요.",
+        ),
       );
       trackAppEvent({
         eventType: "toss_login_connect_failed",
@@ -2331,7 +2358,10 @@ function App() {
       }
     } catch (error) {
       setNotificationConsentMessage(
-        error instanceof Error ? error.message : "알림 동의 저장에 실패했어요.",
+        getUserFacingServiceErrorMessage(
+          error,
+          "알림 동의 저장에 실패했어요. 잠시 후 다시 시도해주세요.",
+        ),
       );
     } finally {
       setIsSubmittingNotificationConsent(false);
@@ -4987,7 +5017,10 @@ function NotificationsScreen({
         },
       });
       setNotificationSyncMessage(
-        error instanceof Error ? error.message : "알림 설정 저장에 실패했어요.",
+        getUserFacingServiceErrorMessage(
+          error,
+          "알림 설정을 저장하지 못했어요. 잠시 후 다시 시도해주세요.",
+        ),
       );
     } finally {
       setIsSavingNotificationPrefs(false);
@@ -5128,7 +5161,7 @@ function NotificationsScreen({
           <button
             className="detail-link-button"
             disabled={isConnectingTossLogin}
-            onClick={onConnectTossLogin}
+            onClick={() => onConnectTossLogin()}
             type="button"
           >
             {isConnectingTossLogin ? "연결 중..." : "지금 연결하기"}
