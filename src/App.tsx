@@ -4969,6 +4969,17 @@ function NotificationsScreen({
       scheduleDay: next.scheduleDay ?? scheduleDay,
       scheduleTime: next.scheduleTime ?? scheduleTime,
     };
+    const now = new Date().toISOString();
+    const shouldAcceptNotificationConsent = merged.enabled && consentSnapshot.consentStatus !== "accepted";
+    const consentPatch =
+      shouldAcceptNotificationConsent
+        ? {
+            consentStatus: "accepted" as const,
+            consentLastPromptedAt: now,
+            consentAcceptedAt: now,
+            consentDeclinedAt: undefined,
+          }
+        : {};
 
     setNotificationsEnabled(merged.enabled);
     setPreparationDay(merged.preparationDay);
@@ -4980,10 +4991,12 @@ function NotificationsScreen({
     persistLocalNotificationPreferenceState({
       ...consentSnapshot,
       ...merged,
+      ...consentPatch,
     });
     onSnapshotUpdated({
       ...consentSnapshot,
       ...merged,
+      ...consentPatch,
     });
     void trackBugEvent({
       eventType: "notification_settings_changed",
@@ -5009,6 +5022,8 @@ function NotificationsScreen({
         scheduleEnabled: merged.scheduleEnabled,
         scheduleDay: merged.scheduleDay,
         scheduleTime: merged.scheduleTime,
+        ...consentPatch,
+        consentDeclinedAt: shouldAcceptNotificationConsent ? null : undefined,
       });
 
       applyNotificationPreferences(saved);

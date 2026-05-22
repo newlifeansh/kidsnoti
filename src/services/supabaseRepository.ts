@@ -1013,10 +1013,6 @@ async function ensureProfile(user: User, identity?: AppsInTossIdentity) {
       (typeof user.user_metadata.toss_user_hash === "string"
         ? user.user_metadata.toss_user_hash
         : null),
-    toss_user_key:
-      typeof user.user_metadata.toss_user_key === "string"
-        ? user.user_metadata.toss_user_key
-        : null,
   });
 
   if (error) throw error;

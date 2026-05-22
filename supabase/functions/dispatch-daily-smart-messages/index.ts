@@ -398,14 +398,14 @@ async function sendAppsInTossSmartMessage(userKey: string, payload: SmartMessage
 
   const response = await fetch(
     `${requireEnv("APPS_IN_TOSS_API_BASE_URL")}/api-partner/v1/apps-in-toss/messenger/send-message`,
-    {
+    withTossMutualTlsClient({
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "x-toss-user-key": userKey,
       },
       body: JSON.stringify(payload),
-    },
+    }),
   );
 
   const body = await response.json() as {
@@ -460,6 +460,48 @@ function formatKst(date: Date) {
     date: iso.slice(0, 10),
     time: iso.slice(11, 16),
   };
+}
+
+function withTossMutualTlsClient(init: RequestInit) {
+  const client = createTossMutualTlsClient();
+  return client ? { ...init, client } as RequestInit : init;
+}
+
+function createTossMutualTlsClient() {
+  const cert = readPemSecret("APPS_IN_TOSS_MTLS_CERT_PEM", "APPS_IN_TOSS_MTLS_CERT_BASE64");
+  const key = readPemSecret("APPS_IN_TOSS_MTLS_KEY_PEM", "APPS_IN_TOSS_MTLS_KEY_BASE64");
+
+  if (!cert && !key) {
+    return undefined;
+  }
+
+  if (!cert || !key) {
+    throw new Error("토스 스마트메시지 API 인증서 설정을 확인해주세요.");
+  }
+
+  const deno = Deno as typeof Deno & {
+    createHttpClient?: (options: { cert: string; key: string }) => unknown;
+  };
+
+  if (typeof deno.createHttpClient !== "function") {
+    throw new Error("토스 스마트메시지 API 인증서 연결을 준비하지 못했어요.");
+  }
+
+  return deno.createHttpClient({ cert, key });
+}
+
+function readPemSecret(pemName: string, base64Name: string) {
+  const pemValue = Deno.env.get(pemName);
+  if (pemValue) return pemValue.replace(/\\n/g, "\n");
+
+  const base64Value = Deno.env.get(base64Name);
+  if (!base64Value) return undefined;
+
+  try {
+    return atob(base64Value).replace(/\\n/g, "\n");
+  } catch {
+    throw new Error(`${base64Name} 값을 읽지 못했어요.`);
+  }
 }
 
 function addDays(date: string, days: number) {

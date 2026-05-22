@@ -718,6 +718,8 @@ grant select, insert, update on public.todos to authenticated;
 grant select, insert, update on public.calendar_events to authenticated;
 grant select, insert on public.bug_events to authenticated;
 grant select, update on public.bug_events to service_role;
+grant insert on public.message_delivery_logs to service_role;
+grant update on public.push_schedules to service_role;
 grant execute on function public.create_family_for_current_user(text) to authenticated;
 grant execute on function public.create_family_invite(uuid, text) to authenticated;
 grant execute on function public.accept_family_invite(text, text) to authenticated;

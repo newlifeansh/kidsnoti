@@ -5,6 +5,8 @@
 create extension if not exists pgcrypto;
 
 grant select, update on public.profiles to service_role;
+grant insert on public.message_delivery_logs to service_role;
+grant update on public.push_schedules to service_role;
 
 do $$
 begin
