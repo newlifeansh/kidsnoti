@@ -1173,7 +1173,7 @@ function App() {
     applyFamilyResponse({
       responseFamilyMembers: inviteDisplayName
         ? invitedFamily.familyMembers.map((member) =>
-            member.userId === sessionUserId && !member.displayName
+            member.userId === sessionUserId
               ? { ...member, displayName: inviteDisplayName }
               : member,
           )
@@ -1197,7 +1197,7 @@ function App() {
       await setSupabaseProfileDisplayName(inviteDisplayName);
     }
 
-    const invitedFamily = await acceptSupabaseFamilyInvite(inviteCode);
+    const invitedFamily = await acceptSupabaseFamilyInvite(inviteCode, inviteDisplayName);
     clearInviteCodeFromLocation();
     applyInviteFamilyData(invitedFamily, session.user.id, inviteDisplayName);
   }, [applyInviteFamilyData]);
@@ -1827,7 +1827,10 @@ function App() {
     trackAppEvent,
   ]);
 
-  const connectTossLogin = useCallback(async () => {
+  const connectTossLogin = useCallback(async (options?: {
+    returnScreen?: Screen;
+    successMessage?: string;
+  }) => {
     setIsConnectingTossLogin(true);
     setTossLoginStatusMessage(null);
 
@@ -1856,7 +1859,10 @@ function App() {
 
       const syncedTossUserKey = await syncSupabaseTossUserKey(authorizationCode, referrer);
       setTossUserKey(syncedTossUserKey);
-      setTossLoginStatusMessage("토스 로그인 연결을 완료했어요.");
+      if (options?.returnScreen) {
+        setScreen(options.returnScreen);
+      }
+      setTossLoginStatusMessage(options?.successMessage ?? "토스 로그인 연결을 완료했어요.");
       trackAppEvent({
         eventType: "toss_login_connected",
         severity: "info",
@@ -2316,6 +2322,13 @@ function App() {
       await updateNotificationConsentPreferenceState(next);
       setNotificationConsentPromptSource(null);
       setNotificationConsentMessage("준비물과 일정 알림을 켰어요.");
+      if (!tossUserKey) {
+        setScreen("notifications");
+        await connectTossLogin({
+          returnScreen: "notifications",
+          successMessage: "토스 로그인 연결까지 마쳤어요. 이제 알림을 받을 준비가 되었어요.",
+        });
+      }
     } catch (error) {
       setNotificationConsentMessage(
         error instanceof Error ? error.message : "알림 동의 저장에 실패했어요.",
@@ -2827,11 +2840,20 @@ function App() {
         {effectiveScreen === "notifications" && (
           <NotificationsScreen
             consentSnapshot={notificationPreferencesSnapshot}
+            isConnectingTossLogin={isConnectingTossLogin}
+            onConnectTossLogin={() => {
+              void connectTossLogin({
+                returnScreen: "notifications",
+                successMessage: "토스 로그인 연결을 완료했어요. 알림 설정으로 다시 돌아왔어요.",
+              });
+            }}
             onPreferencesUpdated={handleNotificationPreferencesUpdated}
             onSnapshotUpdated={syncNotificationPreferencesSnapshot}
             onRequestConsentPrompt={(draft) => {
               openNotificationConsentPrompt("settings-toggle", draft);
             }}
+            tossLoginStatusMessage={tossLoginStatusMessage}
+            tossUserKey={tossUserKey}
           />
         )}
         {effectiveScreen === "bug-events" && <BugDashboardScreen />}
@@ -4240,10 +4262,10 @@ function ChildSetupScreen({
           />
         </Field>
         <div className="form-grid">
-          <Field label="학원/유치원 구분">
+          <Field label="학년 또는 나이 구분">
             <input
               onChange={(event) => setGrade(event.target.value)}
-              placeholder="예) 7세, 초2"
+              placeholder="예) 7세 or 초2"
               value={grade}
             />
           </Field>
@@ -4332,6 +4354,10 @@ function SettingsScreen({
   const [selectedChild, setSelectedChild] = useState<Child | null>(null);
   const canViewBugEvents = currentUserId !== null && OPERATOR_USER_IDS.has(currentUserId);
   const isTossLoginConnected = Boolean(tossUserKey);
+  const getFamilyMemberLabel = (member: FamilyMember) => {
+    if (member.displayName?.trim()) return member.displayName.trim();
+    return member.role === "owner" ? "소유자" : "가족";
+  };
   const deleteChild = async (child: Child) => {
     setSelectedChild(null);
 
@@ -4348,7 +4374,7 @@ function SettingsScreen({
       <div className="page-title-row">
         <div>
           <h1>설정</h1>
-          <p>알림, 캘린더, 가족 공유를 한 곳에서 관리해요.</p>
+          <p>알림과 가족 공유를 한 곳에서 관리해요.</p>
         </div>
       </div>
 
@@ -4410,7 +4436,7 @@ function SettingsScreen({
         {familyMembers.map((member) => (
           <article className="member-row" key={member.userId}>
             <div>
-              <strong>{member.displayName ?? (member.role === "owner" ? "소유자" : "구성원")}</strong>
+              <strong>{getFamilyMemberLabel(member)}</strong>
             </div>
             {member.role === "owner" ? (
               <span className="status-chip owner">소유자</span>
@@ -4671,7 +4697,7 @@ function ChildDetailSheet({
             </div>
           </div>
           <div className="child-detail-grid">
-            <InfoLine label="학년" value={child.grade ?? "-"} />
+            <InfoLine label="학년/나이" value={child.grade ?? "-"} />
             <InfoLine label="반 이름" value={child.className ?? "-"} />
           </div>
           <div className="sheet-actions">
@@ -4786,14 +4812,22 @@ function AvatarPickerSheet({
 
 function NotificationsScreen({
   consentSnapshot,
+  isConnectingTossLogin,
+  onConnectTossLogin,
   onPreferencesUpdated,
   onSnapshotUpdated,
   onRequestConsentPrompt,
+  tossLoginStatusMessage,
+  tossUserKey,
 }: {
   consentSnapshot: LocalNotificationPreferenceState;
+  isConnectingTossLogin: boolean;
+  onConnectTossLogin: () => void;
   onPreferencesUpdated: (preferences: NotificationPreferences) => void;
   onSnapshotUpdated: (state: LocalNotificationPreferenceState) => void;
   onRequestConsentPrompt: (draft: LocalNotificationPreferenceState) => void;
+  tossLoginStatusMessage: string | null;
+  tossUserKey: string | null;
 }) {
   const [notificationsEnabled, setNotificationsEnabled] = useState(consentSnapshot.enabled);
   const [preparationDay, setPreparationDay] = useState<"before" | "same-day">(consentSnapshot.preparationDay);
@@ -4804,6 +4838,7 @@ function NotificationsScreen({
   const [scheduleTime, setScheduleTime] = useState(consentSnapshot.scheduleTime);
   const [isSavingNotificationPrefs, setIsSavingNotificationPrefs] = useState(false);
   const [notificationSyncMessage, setNotificationSyncMessage] = useState<string | null>(null);
+  const isTossLoginConnected = Boolean(tossUserKey);
 
   useEffect(() => {
     setNotificationsEnabled(consentSnapshot.enabled);
@@ -4972,6 +5007,11 @@ function NotificationsScreen({
             <input
               checked={notificationsEnabled}
               onChange={(event) => {
+                if (event.target.checked && !isTossLoginConnected) {
+                  setNotificationSyncMessage("알림을 받으려면 먼저 토스 로그인 연결이 필요해요.");
+                  onConnectTossLogin();
+                  return;
+                }
                 if (event.target.checked && shouldPromptForNotificationConsent(consentSnapshot)) {
                   onRequestConsentPrompt({
                     ...consentSnapshot,
@@ -5081,10 +5121,32 @@ function NotificationsScreen({
         </div>
       </article>
 
+      {!isTossLoginConnected ? (
+        <div className="notice-box">
+          <AlertCircle size={18} />
+          <span>실제 알림 수신을 위해 토스 로그인 연결이 필요해요.</span>
+          <button
+            className="detail-link-button"
+            disabled={isConnectingTossLogin}
+            onClick={onConnectTossLogin}
+            type="button"
+          >
+            {isConnectingTossLogin ? "연결 중..." : "지금 연결하기"}
+          </button>
+        </div>
+      ) : null}
+
       {notificationSyncMessage ? (
         <div className="notice-box">
           <AlertCircle size={18} />
           <span>{notificationSyncMessage}</span>
+        </div>
+      ) : null}
+
+      {tossLoginStatusMessage ? (
+        <div className="notice-box">
+          <CheckCircle2 size={18} />
+          <span>{tossLoginStatusMessage}</span>
         </div>
       ) : null}
 
@@ -5263,15 +5325,27 @@ function TossSelect({
             aria-modal="true"
             className="bottom-sheet select-sheet"
             onClick={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
             role="dialog"
           >
             <div className="sheet-handle" aria-hidden="true" />
-            <div className="sheet-header">
+            <div className="sheet-header select-sheet-header">
               <div>
                 <h2>{label}</h2>
                 <p>원하는 항목을 선택해주세요.</p>
               </div>
-              <button aria-label="닫기" onClick={() => setIsOpen(false)} type="button">
+              <button
+                aria-label="닫기"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setIsOpen(false);
+                }}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                }}
+                type="button"
+              >
                 <X size={20} />
               </button>
             </div>

@@ -458,7 +458,10 @@ begin
 end;
 $$;
 
-create or replace function public.accept_family_invite(invite_code text)
+create or replace function public.accept_family_invite(
+  invite_code text,
+  invite_display_name_override text default null
+)
 returns uuid
 language plpgsql
 security definer
@@ -497,13 +500,18 @@ begin
     invite_row.family_id,
     current_user_id,
     'member',
-    coalesce(nullif(trim(invite_row.intended_display_name), ''), current_display_name)
+    coalesce(
+      nullif(trim(invite_display_name_override), ''),
+      nullif(trim(invite_row.intended_display_name), ''),
+      current_display_name
+    )
   )
   on conflict (family_id, user_id) do update
   set role = public.family_members.role,
       display_name = coalesce(
-        public.family_members.display_name,
+        nullif(trim(invite_display_name_override), ''),
         nullif(trim(invite_row.intended_display_name), ''),
+        public.family_members.display_name,
         excluded.display_name
       );
 
@@ -711,6 +719,6 @@ grant select, insert on public.bug_events to authenticated;
 grant select, update on public.bug_events to service_role;
 grant execute on function public.create_family_for_current_user(text) to authenticated;
 grant execute on function public.create_family_invite(uuid, text) to authenticated;
-grant execute on function public.accept_family_invite(text) to authenticated;
+grant execute on function public.accept_family_invite(text, text) to authenticated;
 grant execute on function public.leave_current_family() to authenticated;
 grant execute on function public.remove_family_member(uuid, uuid) to authenticated;

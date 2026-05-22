@@ -783,14 +783,6 @@ export async function createSupabaseFamilyInvite(invitedDisplayName?: string): P
     invited_display_name: invitedDisplayName?.trim() || null,
   });
 
-  if (error && invitedDisplayName?.trim()) {
-    const fallback = await supabase.rpc("create_family_invite", {
-      target_family_id: null,
-    });
-    if (fallback.error) throw fallback.error;
-    return fallback.data as string;
-  }
-
   if (error) throw error;
   return data as string;
 }
@@ -810,12 +802,16 @@ export async function setSupabaseProfileDisplayName(displayName: string): Promis
   if (error) throw error;
 }
 
-export async function acceptSupabaseFamilyInvite(code: string): Promise<SupabaseFamilyData> {
+export async function acceptSupabaseFamilyInvite(
+  code: string,
+  invitedDisplayName?: string,
+): Promise<SupabaseFamilyData> {
   const session = await getSupabaseSession();
   if (!session || !supabase) throw new Error("Supabase 로그인이 필요해요.");
 
   const { data, error } = await supabase.rpc("accept_family_invite", {
     invite_code: code,
+    invite_display_name_override: invitedDisplayName?.trim() || null,
   });
 
   if (error) throw error;
