@@ -1016,6 +1016,13 @@ async function ensureProfile(user: User, identity?: AppsInTossIdentity) {
   });
 
   if (error) throw error;
+
+  if (identity?.userHash) {
+    const { error: claimError } = await supabase.rpc("claim_profile_by_toss_hash", {
+      toss_hash: identity.userHash,
+    });
+    if (claimError) throw claimError;
+  }
 }
 
 async function ensureCurrentFamily(): Promise<string> {
@@ -1075,20 +1082,40 @@ async function loadFamilyData(familyId: string): Promise<SupabaseFamilyData> {
   if (todosResult.error) throw todosResult.error;
   if (eventsResult.error) throw eventsResult.error;
 
+  const profileNamesByUserId = new Map<string, string>();
+  const memberIds = membersResult.data.map((member) => member.user_id);
+
+  if (memberIds.length > 0) {
+    const { data: memberProfiles, error: memberProfilesError } = await supabase
+      .from("profiles")
+      .select("id, display_name")
+      .in("id", memberIds);
+
+    if (memberProfilesError) throw memberProfilesError;
+
+    for (const profile of memberProfiles ?? []) {
+      if (profile.display_name?.trim()) {
+        profileNamesByUserId.set(profile.id, profile.display_name.trim());
+      }
+    }
+  }
+
   return {
     family: familyRowToFamily(familyResult.data),
-    familyMembers: membersResult.data.map(familyMemberRowToRecord),
+    familyMembers: membersResult.data.map((member) =>
+      familyMemberRowToRecord(member, profileNamesByUserId.get(member.user_id)),
+    ),
     children: childrenResult.data.map(childRowToProfile),
     todos: todosResult.data.map(todoRowToRecord),
     calendarEvents: eventsResult.data.map(calendarEventRowToRecord),
   };
 }
 
-function familyMemberRowToRecord(row: FamilyMemberRow): FamilyMember {
+function familyMemberRowToRecord(row: FamilyMemberRow, fallbackDisplayName?: string): FamilyMember {
   return {
     userId: row.user_id,
     role: row.role,
-    displayName: row.display_name ?? undefined,
+    displayName: row.display_name?.trim() || fallbackDisplayName || undefined,
     joinedAt: row.joined_at,
   };
 }

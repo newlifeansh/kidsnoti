@@ -8,6 +8,68 @@ grant select, update on public.profiles to service_role;
 grant insert on public.message_delivery_logs to service_role;
 grant update on public.push_schedules to service_role;
 
+create or replace function public.claim_profile_by_toss_hash(toss_hash text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  source_profile public.profiles%rowtype;
+  source_is_owner boolean := false;
+begin
+  if toss_hash is null or length(trim(toss_hash)) = 0 then
+    return;
+  end if;
+
+  select *
+  into source_profile
+  from public.profiles
+  where toss_user_hash = toss_hash
+    and id <> auth.uid()
+    and (toss_user_key is not null or current_family_id is not null)
+  order by (toss_user_key is not null) desc, updated_at desc
+  limit 1;
+
+  update public.profiles
+  set
+    toss_user_hash = coalesce(public.profiles.toss_user_hash, toss_hash),
+    toss_user_key = coalesce(public.profiles.toss_user_key, source_profile.toss_user_key),
+    current_family_id = coalesce(public.profiles.current_family_id, source_profile.current_family_id),
+    updated_at = now()
+  where id = auth.uid();
+
+  if source_profile.current_family_id is not null then
+    select exists (
+      select 1
+      from public.families
+      where id = source_profile.current_family_id
+        and owner_id = source_profile.id
+    )
+    into source_is_owner;
+
+    if source_is_owner then
+      update public.families
+      set owner_id = auth.uid(), updated_at = now()
+      where id = source_profile.current_family_id
+        and owner_id = source_profile.id;
+    end if;
+
+    insert into public.family_members (family_id, user_id, role, display_name)
+    values (
+      source_profile.current_family_id,
+      auth.uid(),
+      case when source_is_owner then 'owner'::public.family_role else 'member'::public.family_role end,
+      null
+    )
+    on conflict (family_id, user_id) do update
+    set role = excluded.role;
+  end if;
+end;
+$$;
+
+grant execute on function public.claim_profile_by_toss_hash(text) to authenticated;
+
 do $$
 begin
   if not exists (

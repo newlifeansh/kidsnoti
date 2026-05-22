@@ -364,6 +364,7 @@ const FULL_SCREEN_AD_SHOW_TIMEOUT_MS = 20000;
 const HOME_SHORTCUT_PROMPT_PENDING_KEY = "alimjangssok.home-shortcut.prompt-pending";
 const HOME_SHORTCUT_PROMPT_SEEN_KEY = "alimjangssok.home-shortcut.prompt-seen";
 const HOME_SHORTCUT_PROMPT_DISMISSED_KEY = "alimjangssok.home-shortcut.prompt-dismissed";
+const NAVIGATION_STACK_STORAGE_KEY = "alimjangssok.navigation.stack";
 
 interface PersistedAppState {
   children: Child[];
@@ -371,6 +372,25 @@ interface PersistedAppState {
   calendarEvents: CalendarEventItem[];
   onboardingCompleted: boolean;
 }
+
+const ALL_SCREENS: Screen[] = [
+  "onboarding",
+  "onboarding-tips",
+  "first-child",
+  "home",
+  "upload",
+  "analyzing",
+  "result",
+  "todo",
+  "children",
+  "add-child",
+  "edit-child",
+  "settings",
+  "notifications",
+  "bug-events",
+];
+
+const SCREEN_SET = new Set<Screen>(ALL_SCREENS);
 
 const characterOptions: AvatarOption[] = [
   { id: "baby-boy", label: "0~1세 남아", src: "/avatars/baby-boy.png" },
@@ -451,6 +471,36 @@ function loadPersistedAppState(): PersistedAppState {
 
 function renameLegacyName(name: string) {
   return name === "민준" ? "안유이" : name;
+}
+
+function isScreenValue(value: unknown): value is Screen {
+  return typeof value === "string" && SCREEN_SET.has(value as Screen);
+}
+
+function loadPersistedNavigationStack(): Screen[] {
+  if (typeof window === "undefined") return [];
+
+  try {
+    const raw = window.sessionStorage.getItem(NAVIGATION_STACK_STORAGE_KEY);
+    if (!raw) return [];
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed.filter(isScreenValue);
+  } catch {
+    return [];
+  }
+}
+
+function persistNavigationStack(stack: Screen[]) {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.setItem(NAVIGATION_STACK_STORAGE_KEY, JSON.stringify(stack));
+}
+
+function getInitialScreenFromSession(): Screen | null {
+  const stack = loadPersistedNavigationStack();
+  return stack.at(-1) ?? null;
 }
 
 function renameLegacyChild(child: Child): Child {
@@ -1032,12 +1082,20 @@ function App() {
     (!isOnboardingGuideDismissed() &&
       !(persistedState.onboardingCompleted && persistedState.children.length > 0));
   const initialAppState = forceFirstVisitPreview ? createEmptyPersistedState() : persistedState;
-  const [screen, setScreen] = useState<Screen>(
+  const sessionInitialScreen = forceFirstVisitPreview ? null : getInitialScreenFromSession();
+  const defaultInitialScreen =
     shouldShowFirstVisitFlow
       ? "onboarding"
       : initialAppState.onboardingCompleted && initialAppState.children.length > 0
       ? "home"
-      : "first-child",
+      : "first-child";
+  const resolvedInitialScreen =
+    sessionInitialScreen &&
+    !(initialAppState.children.length === 0 && CHILD_REQUIRED_SCREENS.has(sessionInitialScreen))
+      ? sessionInitialScreen
+      : defaultInitialScreen;
+  const [screen, setScreen] = useState<Screen>(
+    resolvedInitialScreen,
   );
   const [children, setChildren] = useState<Child[]>(initialAppState.children);
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>(demoFamilyMembers);
@@ -1083,6 +1141,20 @@ function App() {
   const hasInitializedHistoryRef = useRef(false);
   const isApplyingPopStateRef = useRef(false);
   const historyIndexRef = useRef(0);
+  const navigationStackRef = useRef<Screen[]>(
+    (() => {
+      const persistedStack = forceFirstVisitPreview ? [] : loadPersistedNavigationStack();
+      if (persistedStack.length > 0) return persistedStack;
+      if (resolvedInitialScreen === "onboarding" || resolvedInitialScreen === "onboarding-tips") {
+        return [resolvedInitialScreen];
+      }
+      if (resolvedInitialScreen === "first-child") {
+        return ["first-child"];
+      }
+      if (resolvedInitialScreen === "home") return ["home"];
+      return ["home", resolvedInitialScreen];
+    })(),
+  );
   const lastHistoryScreenRef = useRef<Screen>(
     children.length === 0 && CHILD_REQUIRED_SCREENS.has(screen) ? "first-child" : screen,
   );
@@ -1517,12 +1589,17 @@ function App() {
       hasInitializedHistoryRef.current = true;
       historyIndexRef.current = 0;
       lastHistoryScreenRef.current = nextScreen;
+      navigationStackRef.current = navigationStackRef.current.at(-1) === nextScreen
+        ? navigationStackRef.current
+        : [...navigationStackRef.current, nextScreen];
+      persistNavigationStack(navigationStackRef.current);
       return;
     }
 
     if (isApplyingPopStateRef.current) {
       isApplyingPopStateRef.current = false;
       lastHistoryScreenRef.current = nextScreen;
+      persistNavigationStack(navigationStackRef.current);
       return;
     }
 
@@ -1530,6 +1607,10 @@ function App() {
       return;
     }
 
+    const previousStack = navigationStackRef.current;
+    navigationStackRef.current =
+      previousStack.at(-1) === nextScreen ? previousStack : [...previousStack, nextScreen];
+    persistNavigationStack(navigationStackRef.current);
     historyIndexRef.current += 1;
     lastHistoryScreenRef.current = nextScreen;
     window.history.pushState(
@@ -1559,29 +1640,45 @@ function App() {
       lastHistoryScreenRef.current = effectiveScreenRef.current;
     };
 
-    const handleRootBack = () => {
-      restoreCurrentHistoryEntry();
+    const navigateToPreviousScreen = () => {
+      const currentStack = navigationStackRef.current;
+      const previousScreen = currentStack.at(-2);
 
-      if (effectiveScreenRef.current === "home") {
-        setIsExitConfirmOpen(true);
+      if (!previousScreen) {
+        restoreCurrentHistoryEntry();
+        if (effectiveScreenRef.current === "home") {
+          setIsExitConfirmOpen(true);
+        } else {
+          isApplyingPopStateRef.current = true;
+          navigationStackRef.current = ["home"];
+          persistNavigationStack(navigationStackRef.current);
+          setIsExitConfirmOpen(false);
+          setScreen("home");
+        }
         return;
       }
 
+      navigationStackRef.current = currentStack.slice(0, -1);
+      persistNavigationStack(navigationStackRef.current);
       isApplyingPopStateRef.current = true;
       historyIndexRef.current = Math.max(historyIndexRef.current + 1, 1);
-      lastHistoryScreenRef.current = "home";
+      lastHistoryScreenRef.current = previousScreen;
       window.history.pushState(
         {
           __alimjangssok: true,
           kind: "screen",
-          screen: "home",
+          screen: previousScreen,
           index: historyIndexRef.current,
         } satisfies AppHistoryState,
         "",
         window.location.href,
       );
       setIsExitConfirmOpen(false);
-      setScreen("home");
+      setScreen(previousScreen);
+    };
+
+    const handleRootBack = () => {
+      navigateToPreviousScreen();
     };
 
     const handlePopState = (event: PopStateEvent) => {
@@ -1591,6 +1688,13 @@ function App() {
         isApplyingPopStateRef.current = true;
         historyIndexRef.current = typeof state.index === "number" ? state.index : historyIndexRef.current;
         lastHistoryScreenRef.current = state.screen;
+        const currentStack = navigationStackRef.current;
+        if (currentStack.at(-2) === state.screen) {
+          navigationStackRef.current = currentStack.slice(0, -1);
+        } else if (currentStack.at(-1) !== state.screen) {
+          navigationStackRef.current = [...currentStack, state.screen];
+        }
+        persistNavigationStack(navigationStackRef.current);
         setIsExitConfirmOpen(false);
         setScreen(state.screen);
         return;
@@ -2254,6 +2358,7 @@ function App() {
   };
 
   const confirmExitApp = () => {
+    window.sessionStorage.removeItem(NAVIGATION_STACK_STORAGE_KEY);
     void closeView().catch(() => {
       window.history.back();
     });
