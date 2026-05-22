@@ -1904,19 +1904,21 @@ function App() {
         message: "토스 로그인 연결을 완료했어요.",
       });
     } catch (error) {
-      setTossLoginStatusMessage(
-        getUserFacingServiceErrorMessage(
-          error,
-          "토스 로그인 연결을 준비하지 못했어요. 잠시 후 다시 시도해주세요.",
-        ),
+      const userFacingMessage = getUserFacingServiceErrorMessage(
+        error,
+        "토스 로그인 연결을 준비하지 못했어요. 잠시 후 다시 시도해주세요.",
       );
+      const serializedError = serializeErrorForLog(error);
+
+      setTossLoginStatusMessage(userFacingMessage);
       trackAppEvent({
         eventType: "toss_login_connect_failed",
         severity: "warning",
         step: "toss_login.connect",
-        message: error instanceof Error ? error.message : "토스 로그인 연결 실패",
+        message: userFacingMessage,
         metadata: {
-          error: serializeErrorForLog(error),
+          error: serializedError,
+          rawErrorMessage: serializedError.message,
         },
       });
     } finally {
