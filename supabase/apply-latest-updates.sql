@@ -4,6 +4,8 @@
 
 create extension if not exists pgcrypto;
 
+grant select, update on public.profiles to service_role;
+
 do $$
 begin
   if not exists (
