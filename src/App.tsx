@@ -782,7 +782,15 @@ function isUuid(value: string | undefined) {
 
 function serializeErrorForLog(error: unknown) {
   if (error instanceof Error) {
+    const record = error as Error & {
+      code?: unknown;
+      debugMessage?: unknown;
+      debugName?: unknown;
+    };
     return {
+      code: record.code,
+      debugMessage: record.debugMessage,
+      debugName: record.debugName,
       message: error.message,
       name: error.name,
       stack: error.stack,
@@ -1918,7 +1926,8 @@ function App() {
         message: userFacingMessage,
         metadata: {
           error: serializedError,
-          rawErrorMessage: serializedError.message,
+          rawErrorCode: serializedError.code,
+          rawErrorMessage: serializedError.debugMessage ?? serializedError.message,
         },
       });
     } finally {

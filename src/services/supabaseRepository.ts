@@ -713,7 +713,7 @@ export async function getSupabaseGoogleCalendarAuthUrl(): Promise<string> {
   });
 
   if (!response.ok) {
-    throw new Error(await readFunctionError(response));
+    throw await readFunctionError(response);
   }
 
   const body = await response.json() as { authUrl?: string };
@@ -739,7 +739,7 @@ export async function syncSupabaseGoogleCalendarEvents(calendarEventIds?: string
   });
 
   if (!response.ok) {
-    throw new Error(await readFunctionError(response));
+    throw await readFunctionError(response);
   }
 
   return response.json() as Promise<{ picked: number; created: number; failed: number }>;
@@ -763,7 +763,7 @@ export async function syncSupabaseTossUserKey(
   });
 
   if (!response.ok) {
-    throw new Error(await readFunctionError(response));
+    throw await readFunctionError(response);
   }
 
   const body = await response.json() as { userKey?: string };
@@ -1245,11 +1245,30 @@ function normalizeTimeForClient(value: string) {
   return value.slice(0, 5);
 }
 
+class SupabaseFunctionError extends Error {
+  code?: string;
+  debugMessage?: string;
+  debugName?: string;
+
+  constructor(message: string, payload?: { code?: string; debugMessage?: string; debugName?: string }) {
+    super(message);
+    this.name = "SupabaseFunctionError";
+    this.code = payload?.code;
+    this.debugMessage = payload?.debugMessage;
+    this.debugName = payload?.debugName;
+  }
+}
+
 async function readFunctionError(response: Response) {
   try {
-    const body = await response.json() as { message?: string };
-    return body.message ?? "요청 처리에 실패했어요.";
+    const body = await response.json() as {
+      code?: string;
+      debugMessage?: string;
+      debugName?: string;
+      message?: string;
+    };
+    return new SupabaseFunctionError(body.message ?? "요청 처리에 실패했어요.", body);
   } catch {
-    return "요청 처리에 실패했어요.";
+    return new SupabaseFunctionError("요청 처리에 실패했어요.");
   }
 }

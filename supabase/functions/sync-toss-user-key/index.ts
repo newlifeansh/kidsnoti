@@ -22,7 +22,7 @@ interface TossApiFail {
 }
 
 class PublicFunctionError extends Error {
-  constructor(message: string) {
+  constructor(message: string, public code = "TOSS_API_ERROR") {
     super(message);
     this.name = "PublicFunctionError";
   }
@@ -65,9 +65,15 @@ Deno.serve(async (request) => {
     return jsonResponse({ userKey: String(userKey) });
   } catch (error) {
     console.error("sync-toss-user-key failed", serializeErrorForLog(error));
+    const diagnostic = toDiagnosticError(error);
 
     return jsonResponse(
-      { message: toPublicErrorMessage(error) },
+      {
+        message: toPublicErrorMessage(error),
+        code: diagnostic.code,
+        debugMessage: diagnostic.message,
+        debugName: diagnostic.name,
+      },
       { status: 500 },
     );
   }
@@ -90,7 +96,10 @@ async function exchangeAuthorizationCode(
 
   const body = await readTossApiResponse<TokenExchangeSuccess>(response);
   if (!response.ok || body.resultType !== "SUCCESS" || !body.success?.accessToken) {
-    throw new PublicFunctionError(body.error?.reason ?? "토스 accessToken 교환에 실패했어요.");
+    throw new PublicFunctionError(
+      body.error?.reason ?? "토스 accessToken 교환에 실패했어요.",
+      body.error?.errorCode ?? "TOSS_TOKEN_EXCHANGE_FAILED",
+    );
   }
 
   return body.success;
@@ -105,7 +114,10 @@ async function fetchTossUserKey(accessToken: string) {
 
   const body = await readTossApiResponse<{ userKey?: string | number }>(response);
   if (!response.ok || body.resultType !== "SUCCESS" || body.success?.userKey == null) {
-    throw new PublicFunctionError(body.error?.reason ?? "토스 userKey 조회에 실패했어요.");
+    throw new PublicFunctionError(
+      body.error?.reason ?? "토스 userKey 조회에 실패했어요.",
+      body.error?.errorCode ?? "TOSS_USER_KEY_LOOKUP_FAILED",
+    );
   }
 
   return body.success.userKey;
@@ -139,7 +151,7 @@ function createTossMutualTlsClient() {
   }
 
   if (!cert || !key) {
-    throw new PublicFunctionError("토스 로그인 API 인증서 설정을 확인해주세요.");
+    throw new PublicFunctionError("토스 로그인 API 인증서 설정을 확인해주세요.", "TOSS_MTLS_SECRET_INCOMPLETE");
   }
 
   const deno = Deno as typeof Deno & {
@@ -147,7 +159,7 @@ function createTossMutualTlsClient() {
   };
 
   if (typeof deno.createHttpClient !== "function") {
-    throw new PublicFunctionError("토스 로그인 API 인증서 연결을 준비하지 못했어요.");
+    throw new PublicFunctionError("토스 로그인 API 인증서 연결을 준비하지 못했어요.", "TOSS_MTLS_UNSUPPORTED_RUNTIME");
   }
 
   return deno.createHttpClient({ cert, key });
@@ -163,7 +175,7 @@ function readPemSecret(pemName: string, base64Name: string) {
   try {
     return atob(base64Value).replace(/\\n/g, "\n");
   } catch {
-    throw new PublicFunctionError(`${base64Name} 값을 읽지 못했어요.`);
+    throw new PublicFunctionError(`${base64Name} 값을 읽지 못했어요.`, "TOSS_MTLS_SECRET_DECODE_FAILED");
   }
 }
 
@@ -236,9 +248,35 @@ function toPublicErrorMessage(error: unknown) {
   return fallback;
 }
 
-function serializeErrorForLog(error: unknown) {
+function toDiagnosticError(error: unknown) {
+  if (error instanceof PublicFunctionError) {
+    return {
+      code: error.code,
+      message: error.message,
+      name: error.name,
+    };
+  }
+
   if (error instanceof Error) {
     return {
+      code: "SYNC_TOSS_USER_KEY_FAILED",
+      message: error.message,
+      name: error.name,
+    };
+  }
+
+  return {
+    code: "SYNC_TOSS_USER_KEY_FAILED",
+    message: String(error),
+    name: "UnknownError",
+  };
+}
+
+function serializeErrorForLog(error: unknown) {
+  if (error instanceof Error) {
+    const record = error as Error & { code?: unknown };
+    return {
+      code: record.code,
       message: error.message,
       name: error.name,
       stack: error.stack,
