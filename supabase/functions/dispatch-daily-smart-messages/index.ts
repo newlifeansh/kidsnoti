@@ -56,6 +56,20 @@ interface SmartMessagePayload {
   context: Record<string, string>;
 }
 
+type SmartMessageResponse = {
+  resultType?: string;
+  success?: {
+    msgCount?: number;
+    sentPushCount?: number;
+    sentInboxCount?: number;
+    sentSmsCount?: number;
+    sentAlimtalkCount?: number;
+    sentFriendtalkCount?: number;
+    fail?: Record<string, unknown>;
+  };
+  error?: { reason?: string };
+} & Record<string, unknown>;
+
 const MATCH_WINDOW_MINUTES = 10;
 
 Deno.serve(async (request) => {
@@ -152,6 +166,7 @@ async function processDailyReminder(
         };
 
         const responseBody = await sendAppsInTossSmartMessage(profile.toss_user_key, payload);
+        const deliveryResult = getSmartMessageDeliveryResult(responseBody);
         await insertDailyDeliveryLog(supabase, {
           userId: preference.user_id,
           familyId: preference.family_id,
@@ -159,10 +174,14 @@ async function processDailyReminder(
           targetDate,
           triggerKind,
           templateSetCode,
+          status: deliveryResult.delivered ? "sent" : "skipped",
           requestPayload: payload,
           responseBody,
+          errorMessage: deliveryResult.delivered ? undefined : deliveryResult.reason,
         });
-        sentCount += 1;
+        if (deliveryResult.delivered) {
+          sentCount += 1;
+        }
       }
 
       return sentCount > 0 ? "sent" : "skipped";
@@ -204,6 +223,7 @@ async function processDailyReminder(
       };
 
       const responseBody = await sendAppsInTossSmartMessage(profile.toss_user_key, payload);
+      const deliveryResult = getSmartMessageDeliveryResult(responseBody);
       await insertDailyDeliveryLog(supabase, {
         userId: preference.user_id,
         familyId: preference.family_id,
@@ -211,10 +231,14 @@ async function processDailyReminder(
         targetDate,
         triggerKind,
         templateSetCode,
+        status: deliveryResult.delivered ? "sent" : "skipped",
         requestPayload: payload,
         responseBody,
+        errorMessage: deliveryResult.delivered ? undefined : deliveryResult.reason,
       });
-      sentCount += 1;
+      if (deliveryResult.delivered) {
+        sentCount += 1;
+      }
     }
 
     return sentCount > 0 ? "sent" : "skipped";
@@ -360,8 +384,10 @@ async function insertDailyDeliveryLog(
     targetDate: string;
     triggerKind: TriggerKind;
     templateSetCode: string;
+    status: "sent" | "skipped";
     requestPayload: Record<string, unknown>;
     responseBody?: Record<string, unknown>;
+    errorMessage?: string;
   },
 ) {
   const { error } = await supabase
@@ -375,10 +401,11 @@ async function insertDailyDeliveryLog(
       target_date: input.targetDate,
       trigger_kind: input.triggerKind,
       template_set_code: input.templateSetCode,
-      status: "sent",
+      status: input.status,
       request_payload: input.requestPayload,
       response_body: input.responseBody ?? null,
-      sent_at: new Date().toISOString(),
+      error_message: input.errorMessage ?? null,
+      sent_at: input.status === "sent" ? new Date().toISOString() : null,
     });
 
   if (error) throw error;
@@ -408,16 +435,47 @@ async function sendAppsInTossSmartMessage(userKey: string, payload: SmartMessage
     }),
   );
 
-  const body = await response.json() as {
-    resultType?: string;
-    error?: { reason?: string };
-  } & Record<string, unknown>;
+  const body = await response.json() as SmartMessageResponse;
 
   if (!response.ok || body.resultType !== "SUCCESS") {
     throw new Error(body.error?.reason ?? "토스 스마트 발송 API 호출에 실패했어요.");
   }
 
   return body;
+}
+
+function getSmartMessageDeliveryResult(body: SmartMessageResponse) {
+  const success = body.success;
+  const deliveredCount =
+    (success?.sentPushCount ?? 0) +
+    (success?.sentInboxCount ?? 0) +
+    (success?.sentSmsCount ?? 0) +
+    (success?.sentAlimtalkCount ?? 0) +
+    (success?.sentFriendtalkCount ?? 0);
+
+  if ((success?.msgCount ?? 0) > 0 || deliveredCount > 0) {
+    return { delivered: true, reason: undefined };
+  }
+
+  return {
+    delivered: false,
+    reason: extractSmartMessageFailReason(body) ?? "smart_message_not_delivered",
+  };
+}
+
+function extractSmartMessageFailReason(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.reachedFailReason === "string") return record.reachedFailReason;
+  if (typeof record.reason === "string") return record.reason;
+
+  for (const nested of Object.values(record)) {
+    const reason = extractSmartMessageFailReason(nested);
+    if (reason) return reason;
+  }
+
+  return undefined;
 }
 
 function getDueTriggerKinds(preference: NotificationPreferenceRow, nowTime: string): TriggerKind[] {

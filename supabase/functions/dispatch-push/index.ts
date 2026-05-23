@@ -45,6 +45,20 @@ interface SmartMessagePayload {
   context: Record<string, string>;
 }
 
+type SmartMessageResponse = {
+  resultType?: string;
+  success?: {
+    msgCount?: number;
+    sentPushCount?: number;
+    sentInboxCount?: number;
+    sentSmsCount?: number;
+    sentAlimtalkCount?: number;
+    sentFriendtalkCount?: number;
+    fail?: Record<string, unknown>;
+  };
+  error?: { reason?: string };
+} & Record<string, unknown>;
+
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -150,6 +164,23 @@ async function processSchedule(
     const child = await getChild(supabase, todo.child_id);
     payload = createSmartMessagePayload(templateSetCode, todo, child);
     const responseBody = await sendAppsInTossSmartMessage(profile.toss_user_key, payload);
+    const deliveryResult = getSmartMessageDeliveryResult(responseBody);
+
+    if (!deliveryResult.delivered) {
+      await markScheduleFailed(supabase, schedule.id);
+      await insertDeliveryLog(supabase, {
+        scheduleId: schedule.id,
+        userId: schedule.user_id,
+        familyId: schedule.family_id,
+        todoId: schedule.todo_id,
+        templateSetCode,
+        status: "failed",
+        requestPayload: payload,
+        responseBody,
+        errorMessage: deliveryResult.reason,
+      });
+      return "failed";
+    }
 
     await markScheduleSent(supabase, schedule.id);
     await insertDeliveryLog(supabase, {
@@ -334,16 +365,47 @@ async function sendAppsInTossSmartMessage(userKey: string, payload: SmartMessage
     }),
   );
 
-  const body = await response.json() as {
-    resultType?: string;
-    error?: { reason?: string };
-  } & Record<string, unknown>;
+  const body = await response.json() as SmartMessageResponse;
 
   if (!response.ok || body.resultType !== "SUCCESS") {
     throw new Error(body.error?.reason ?? "토스 스마트 발송 API 호출에 실패했어요.");
   }
 
   return body;
+}
+
+function getSmartMessageDeliveryResult(body: SmartMessageResponse) {
+  const success = body.success;
+  const deliveredCount =
+    (success?.sentPushCount ?? 0) +
+    (success?.sentInboxCount ?? 0) +
+    (success?.sentSmsCount ?? 0) +
+    (success?.sentAlimtalkCount ?? 0) +
+    (success?.sentFriendtalkCount ?? 0);
+
+  if ((success?.msgCount ?? 0) > 0 || deliveredCount > 0) {
+    return { delivered: true, reason: undefined };
+  }
+
+  return {
+    delivered: false,
+    reason: extractSmartMessageFailReason(body) ?? "smart_message_not_delivered",
+  };
+}
+
+function extractSmartMessageFailReason(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.reachedFailReason === "string") return record.reachedFailReason;
+  if (typeof record.reason === "string") return record.reason;
+
+  for (const nested of Object.values(record)) {
+    const reason = extractSmartMessageFailReason(nested);
+    if (reason) return reason;
+  }
+
+  return undefined;
 }
 
 function formatTodoCategory(category: TodoRow["category"]) {
