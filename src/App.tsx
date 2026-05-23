@@ -9,6 +9,7 @@ import {
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronLeft,
   ChevronDown,
   ChevronRight,
   Circle,
@@ -1625,60 +1626,60 @@ function App() {
     );
   }, [effectiveScreen]);
 
-  useEffect(() => {
-    const restoreCurrentHistoryEntry = () => {
-      window.history.pushState(
-        {
-          __alimjangssok: true,
-          kind: "screen",
-          screen: effectiveScreenRef.current,
-          index: historyIndexRef.current,
-        } satisfies AppHistoryState,
-        "",
-        window.location.href,
-      );
-      lastHistoryScreenRef.current = effectiveScreenRef.current;
-    };
+  const restoreCurrentHistoryEntry = useCallback(() => {
+    window.history.pushState(
+      {
+        __alimjangssok: true,
+        kind: "screen",
+        screen: effectiveScreenRef.current,
+        index: historyIndexRef.current,
+      } satisfies AppHistoryState,
+      "",
+      window.location.href,
+    );
+    lastHistoryScreenRef.current = effectiveScreenRef.current;
+  }, []);
 
-    const navigateToPreviousScreen = () => {
-      const currentStack = navigationStackRef.current;
-      const previousScreen = currentStack.at(-2);
+  const navigateBackInApp = useCallback(() => {
+    const currentStack = navigationStackRef.current;
+    const previousScreen = currentStack.at(-2);
 
-      if (!previousScreen) {
-        restoreCurrentHistoryEntry();
-        if (effectiveScreenRef.current === "home") {
-          setIsExitConfirmOpen(true);
-        } else {
-          isApplyingPopStateRef.current = true;
-          navigationStackRef.current = ["home"];
-          persistNavigationStack(navigationStackRef.current);
-          setIsExitConfirmOpen(false);
-          setScreen("home");
-        }
-        return;
+    if (!previousScreen) {
+      restoreCurrentHistoryEntry();
+      if (effectiveScreenRef.current === "home") {
+        setIsExitConfirmOpen(true);
+      } else {
+        isApplyingPopStateRef.current = true;
+        navigationStackRef.current = ["home"];
+        persistNavigationStack(navigationStackRef.current);
+        setIsExitConfirmOpen(false);
+        setScreen("home");
       }
+      return;
+    }
 
-      navigationStackRef.current = currentStack.slice(0, -1);
-      persistNavigationStack(navigationStackRef.current);
-      isApplyingPopStateRef.current = true;
-      historyIndexRef.current = Math.max(historyIndexRef.current + 1, 1);
-      lastHistoryScreenRef.current = previousScreen;
-      window.history.pushState(
-        {
-          __alimjangssok: true,
-          kind: "screen",
-          screen: previousScreen,
-          index: historyIndexRef.current,
-        } satisfies AppHistoryState,
-        "",
-        window.location.href,
-      );
-      setIsExitConfirmOpen(false);
-      setScreen(previousScreen);
-    };
+    navigationStackRef.current = currentStack.slice(0, -1);
+    persistNavigationStack(navigationStackRef.current);
+    isApplyingPopStateRef.current = true;
+    historyIndexRef.current = Math.max(historyIndexRef.current + 1, 1);
+    lastHistoryScreenRef.current = previousScreen;
+    window.history.pushState(
+      {
+        __alimjangssok: true,
+        kind: "screen",
+        screen: previousScreen,
+        index: historyIndexRef.current,
+      } satisfies AppHistoryState,
+      "",
+      window.location.href,
+    );
+    setIsExitConfirmOpen(false);
+    setScreen(previousScreen);
+  }, [restoreCurrentHistoryEntry]);
 
+  useEffect(() => {
     const handleRootBack = () => {
-      navigateToPreviousScreen();
+      navigateBackInApp();
     };
 
     const handlePopState = (event: PopStateEvent) => {
@@ -1709,7 +1710,7 @@ function App() {
     return () => {
       window.removeEventListener("popstate", handlePopState);
     };
-  }, []);
+  }, [navigateBackInApp]);
 
   useEffect(() => {
     let ignore = false;
@@ -2932,6 +2933,7 @@ function App() {
             images={selectedImages}
             onAnalyze={analyzeUpload}
             onAddImages={addSelectedImages}
+            onBack={navigateBackInApp}
             onClearImages={clearSelectedImages}
             onRemoveImage={removeSelectedImage}
             onTrackEvent={trackAppEvent}
@@ -2942,6 +2944,7 @@ function App() {
           <ResultScreen
             childrenProfiles={children}
             isSaving={isSavingResult}
+            onBack={navigateBackInApp}
             result={analysisResult}
             onConfirm={confirmAnalysis}
             onNavigate={setScreen}
@@ -2951,6 +2954,7 @@ function App() {
         {effectiveScreen === "todo" && (
           <TodoScreen
             children={children}
+            onBack={navigateBackInApp}
             todos={todos}
             onAddTodo={addTodo}
             onDeleteTodo={deleteTodo}
@@ -2959,11 +2963,12 @@ function App() {
           />
         )}
         {effectiveScreen === "children" && (
-          <ChildrenScreen children={children} onEditChild={editChild} onNavigate={setScreen} />
+          <ChildrenScreen children={children} onBack={navigateBackInApp} onEditChild={editChild} onNavigate={setScreen} />
         )}
         {effectiveScreen === "add-child" && (
           <ChildSetupScreen
             mode="add"
+            onBack={navigateBackInApp}
             onAddChild={addChild}
           />
         )}
@@ -2971,6 +2976,7 @@ function App() {
           <ChildSetupScreen
             child={editingChild}
             mode="edit"
+            onBack={navigateBackInApp}
             onAddChild={saveChild}
             onDeleteChild={deleteEditingChild}
           />
@@ -2981,6 +2987,7 @@ function App() {
             currentUserId={currentUserId}
             familyMembers={familyMembers}
             isConnectingTossLogin={isConnectingTossLogin}
+            onBack={navigateBackInApp}
             onDeleteChild={deleteChild}
             onConnectTossLogin={() => {
               void connectTossLogin();
@@ -2997,6 +3004,7 @@ function App() {
           <NotificationsScreen
             consentSnapshot={notificationPreferencesSnapshot}
             isConnectingTossLogin={isConnectingTossLogin}
+            onBack={navigateBackInApp}
             onConnectTossLogin={() => {
               void connectTossLogin({
                 returnScreen: "notifications",
@@ -3012,7 +3020,7 @@ function App() {
             tossUserKey={tossUserKey}
           />
         )}
-        {effectiveScreen === "bug-events" && <BugDashboardScreen />}
+        {effectiveScreen === "bug-events" && <BugDashboardScreen onBack={navigateBackInApp} />}
       </main>
 
       {notificationConsentPromptSource ? (
@@ -3622,6 +3630,7 @@ function UploadScreen({
   images,
   onAnalyze,
   onAddImages,
+  onBack,
   onClearImages,
   onRemoveImage,
   onTrackEvent,
@@ -3629,6 +3638,7 @@ function UploadScreen({
   images: SelectedUploadImage[];
   onAnalyze: () => void;
   onAddImages: (files: File[]) => void;
+  onBack: () => void;
   onClearImages: () => void;
   onRemoveImage: (id: string) => void;
   onTrackEvent: (
@@ -3718,9 +3728,14 @@ function UploadScreen({
 
   return (
     <section className="page-stack">
-      <div className="page-title">
-        <h1>알림장 파일을 올려주세요</h1>
-        <p>사진과 PDF를 최대 3개까지 올릴 수 있고, 파일별로 취소할 수 있어요.</p>
+      <div className="page-title-row with-back">
+        <div className="page-title-leading">
+          <PageBackButton onBack={onBack} />
+          <div>
+            <h1>알림장 파일을 올려주세요</h1>
+            <p>사진과 PDF를 최대 3개까지 올릴 수 있고, 파일별로 취소할 수 있어요.</p>
+          </div>
+        </div>
       </div>
 
       <label className={images.length > 0 ? "upload-zone compact" : "upload-zone"}>
@@ -3953,6 +3968,7 @@ function ExitConfirmDialog({
 function ResultScreen({
   childrenProfiles,
   isSaving,
+  onBack,
   result,
   onConfirm,
   onNavigate,
@@ -3960,6 +3976,7 @@ function ResultScreen({
 }: {
   childrenProfiles: Child[];
   isSaving: boolean;
+  onBack: () => void;
   result: ParsedNoticeResult | null;
   onConfirm: () => void;
   onNavigate: (screen: Screen) => void;
@@ -3970,9 +3987,14 @@ function ResultScreen({
   if (!result) {
     return (
       <section className="page-stack">
-        <div className="page-title">
-          <h1>분석 결과가 아직 없어요</h1>
-          <p>알림장 사진을 먼저 업로드해주세요.</p>
+        <div className="page-title-row with-back">
+          <div className="page-title-leading">
+            <PageBackButton onBack={onBack} />
+            <div>
+              <h1>분석 결과가 아직 없어요</h1>
+              <p>알림장 사진을 먼저 업로드해주세요.</p>
+            </div>
+          </div>
         </div>
         <Button size="l" onClick={() => onNavigate("upload")}>
           업로드로 돌아가기
@@ -4060,9 +4082,14 @@ function ResultScreen({
 
   return (
     <section className="page-stack">
-      <div className="page-title">
-        <h1>알림장을 분류했어요</h1>
-        <p>저장할 항목을 가볍게 확인해주세요.</p>
+      <div className="page-title-row with-back">
+        <div className="page-title-leading">
+          <PageBackButton onBack={onBack} />
+          <div>
+            <h1>알림장을 분류했어요</h1>
+            <p>저장할 항목을 가볍게 확인해주세요.</p>
+          </div>
+        </div>
       </div>
 
       <section className="result-summary-card">
@@ -4160,6 +4187,7 @@ function ResultScreen({
 
 function TodoScreen({
   children,
+  onBack,
   todos,
   onAddTodo,
   onDeleteTodo,
@@ -4167,6 +4195,7 @@ function TodoScreen({
   onToggleTodo,
 }: {
   children: Child[];
+  onBack: () => void;
   todos: TodoItem[];
   onAddTodo: (todo: Omit<TodoItem, "id" | "completed">) => void;
   onDeleteTodo: (id: string) => void;
@@ -4187,10 +4216,13 @@ function TodoScreen({
 
   return (
     <section className="page-stack">
-      <div className="page-title-row">
-        <div>
-          <h1>할 일</h1>
-          <p>dueDate 기준으로 정렬된 아이별 To-do</p>
+      <div className="page-title-row with-back">
+        <div className="page-title-leading">
+          <PageBackButton onBack={onBack} />
+          <div>
+            <h1>할 일</h1>
+            <p>dueDate 기준으로 정렬된 아이별 To-do</p>
+          </div>
         </div>
         <button className="round-action" onClick={() => setIsAddingTodo(true)} type="button">
           <Plus size={22} />
@@ -4277,19 +4309,24 @@ function TodoScreen({
 
 function ChildrenScreen({
   children,
+  onBack,
   onEditChild,
   onNavigate,
 }: {
   children: Child[];
+  onBack: () => void;
   onEditChild: (child: Child) => void;
   onNavigate: (screen: Screen) => void;
 }) {
   return (
     <section className="page-stack">
-      <div className="page-title-row">
-        <div>
-          <h1>아이 정보</h1>
-          <p>아이별 학교, 학년, 반 정보를 관리합니다.</p>
+      <div className="page-title-row with-back">
+        <div className="page-title-leading">
+          <PageBackButton onBack={onBack} />
+          <div>
+            <h1>아이 정보</h1>
+            <p>아이별 학교, 학년, 반 정보를 관리합니다.</p>
+          </div>
         </div>
         <button className="round-action" onClick={() => onNavigate("add-child")} type="button">
           <Plus size={22} />
@@ -4330,11 +4367,13 @@ function ChildrenScreen({
 function ChildSetupScreen({
   child,
   mode,
+  onBack,
   onAddChild,
   onDeleteChild,
 }: {
   child?: Child;
   mode: "first" | "add" | "edit";
+  onBack?: () => void;
   onAddChild: (child: Child) => void;
   onDeleteChild?: (child: Child) => Promise<void> | void;
 }) {
@@ -4387,7 +4426,17 @@ function ChildSetupScreen({
         <div className="setup-hero">
           <h1>우리 아이 정보를 입력해주세요.</h1>
         </div>
-      ) : null}
+      ) : (
+        <div className="page-title-row with-back">
+          <div className="page-title-leading">
+            {onBack ? <PageBackButton onBack={onBack} /> : null}
+            <div>
+              <h1>{mode === "edit" ? "아이 정보 수정" : "자녀 추가"}</h1>
+              <p>{mode === "edit" ? "프로필 정보를 수정하고 저장할 수 있어요." : "새 자녀 정보를 등록할 수 있어요."}</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <form className="form-stack" onSubmit={submit}>
         <button className="character-stage" onClick={() => setIsAvatarPickerOpen(true)} type="button">
@@ -4453,9 +4502,7 @@ function ChildSetupScreen({
             onClick={(event) => event.stopPropagation()}
           >
             <div className="avatar-modal-header">
-              <button aria-label="닫기" onClick={() => setIsAvatarPickerOpen(false)} type="button">
-                <X size={20} />
-              </button>
+              <SheetCloseButton onClose={() => setIsAvatarPickerOpen(false)} />
             </div>
             <div className="character-grid">
               {characterOptions.map((option) => (
@@ -4485,6 +4532,7 @@ function SettingsScreen({
   currentUserId,
   familyMembers,
   isConnectingTossLogin,
+  onBack,
   onDeleteChild,
   onConnectTossLogin,
   onEditChild,
@@ -4498,6 +4546,7 @@ function SettingsScreen({
   currentUserId: string | null;
   familyMembers: FamilyMember[];
   isConnectingTossLogin: boolean;
+  onBack: () => void;
   onDeleteChild: (child: Child) => void;
   onConnectTossLogin: () => void;
   onEditChild: (child: Child) => void;
@@ -4527,10 +4576,13 @@ function SettingsScreen({
 
   return (
     <section className="page-stack">
-      <div className="page-title-row">
-        <div>
-          <h1>설정</h1>
-          <p>알림과 가족 공유를 한 곳에서 관리해요.</p>
+      <div className="page-title-row with-back">
+        <div className="page-title-leading">
+          <PageBackButton onBack={onBack} />
+          <div>
+            <h1>설정</h1>
+            <p>알림과 가족 공유를 한 곳에서 관리해요.</p>
+          </div>
         </div>
       </div>
 
@@ -4632,7 +4684,7 @@ function SettingsScreen({
   );
 }
 
-function BugDashboardScreen() {
+function BugDashboardScreen({ onBack }: { onBack: () => void }) {
   const [logs, setLogs] = useState<BugEventLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -4704,10 +4756,13 @@ function BugDashboardScreen() {
 
   return (
     <section className="page-stack">
-      <div className="page-title-row">
-        <div>
-          <h1>버그 현황</h1>
-          <p>서비스 전체 계정에서 들어온 오류와 시트 적재 상태를 확인해요.</p>
+      <div className="page-title-row with-back">
+        <div className="page-title-leading">
+          <PageBackButton onBack={onBack} />
+          <div>
+            <h1>버그 현황</h1>
+            <p>서비스 전체 계정에서 들어온 오류와 시트 적재 상태를 확인해요.</p>
+          </div>
         </div>
         <button className="round-action secondary" onClick={() => void loadLogs()} type="button">
           <RefreshCw size={18} />
@@ -4814,6 +4869,43 @@ function Button({
   );
 }
 
+function SheetCloseButton({ onClose }: { onClose: () => void }) {
+  const handleClose = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onClose();
+  };
+
+  const stopPointerEvent = (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+  };
+
+  return (
+    <button
+      aria-label="닫기"
+      className="sheet-close-button"
+      onClick={handleClose}
+      onPointerDown={stopPointerEvent}
+      type="button"
+    >
+      <X size={20} />
+    </button>
+  );
+}
+
+function PageBackButton({ onBack }: { onBack: () => void }) {
+  return (
+    <button
+      aria-label="이전 화면으로 돌아가기"
+      className="page-back-button"
+      onClick={onBack}
+      type="button"
+    >
+      <ChevronLeft size={22} />
+    </button>
+  );
+}
+
 function ChildDetailSheet({
   child,
   onClose,
@@ -4838,9 +4930,7 @@ function ChildDetailSheet({
             <h2>{child.name}</h2>
             <p>등록된 아이 정보를 확인하고 정리할 수 있어요.</p>
           </div>
-          <button aria-label="닫기" onClick={onClose} type="button">
-            <X size={20} />
-          </button>
+          <SheetCloseButton onClose={onClose} />
         </div>
         <div className="child-detail-sheet">
           <div className="child-detail-hero">
@@ -4892,9 +4982,7 @@ function EventDetailSheet({
             <h2>{event.title}</h2>
             <p>일정 정보를 확인하고 필요하면 삭제할 수 있어요.</p>
           </div>
-          <button aria-label="닫기" onClick={onClose} type="button">
-            <X size={20} />
-          </button>
+          <SheetCloseButton onClose={onClose} />
         </div>
         <div className="todo-detail-panel">
           <strong>{event.title}</strong>
@@ -4944,9 +5032,7 @@ function AvatarPickerSheet({
             <strong>프로필 사진 변경</strong>
             <span>사진만 골라서 바로 바꿀 수 있어요.</span>
           </div>
-          <button aria-label="닫기" onClick={onClose} type="button">
-            <X size={20} />
-          </button>
+          <SheetCloseButton onClose={onClose} />
         </div>
         <div className="character-grid">
           {characterOptions.map((option) => (
@@ -4969,6 +5055,7 @@ function AvatarPickerSheet({
 function NotificationsScreen({
   consentSnapshot,
   isConnectingTossLogin,
+  onBack,
   onConnectTossLogin,
   onPreferencesUpdated,
   onSnapshotUpdated,
@@ -4978,6 +5065,7 @@ function NotificationsScreen({
 }: {
   consentSnapshot: LocalNotificationPreferenceState;
   isConnectingTossLogin: boolean;
+  onBack: () => void;
   onConnectTossLogin: () => void;
   onPreferencesUpdated: (preferences: NotificationPreferences) => void;
   onSnapshotUpdated: (state: LocalNotificationPreferenceState) => void;
@@ -5170,8 +5258,13 @@ function NotificationsScreen({
 
   return (
     <section className="page-stack">
-      <div className="page-title">
-        <h1>알림 설정</h1>
+      <div className="page-title-row with-back">
+        <div className="page-title-leading">
+          <PageBackButton onBack={onBack} />
+          <div>
+            <h1>알림 설정</h1>
+          </div>
+        </div>
       </div>
 
       <article className="child-card notification-settings-card">
@@ -5366,9 +5459,7 @@ function NotificationConsentSheet({
                 : "알림을 켜면 준비물 확인과 이번 주 일정 리마인드 알림을 받을 수 있어요."}
             </p>
           </div>
-          <button aria-label="닫기" onClick={onClose} type="button">
-            <X size={20} />
-          </button>
+          <SheetCloseButton onClose={onClose} />
         </div>
 
         <div className="notification-consent-card">
@@ -5508,20 +5599,7 @@ function TossSelect({
                 <h2>{label}</h2>
                 <p>원하는 항목을 선택해주세요.</p>
               </div>
-              <button
-                aria-label="닫기"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setIsOpen(false);
-                }}
-                onPointerDown={(event) => {
-                  event.stopPropagation();
-                }}
-                type="button"
-              >
-                <X size={20} />
-              </button>
+              <SheetCloseButton onClose={() => setIsOpen(false)} />
             </div>
             <div className="select-option-list">
               {options.map((option) => (
@@ -5603,9 +5681,7 @@ function InviteRoleSheet({
             <h2>누구를 초대할까요?</h2>
             <p>예: 남편, 할머니처럼 지정해두면 가족 구성원에 그 이름으로 바로 보여줄 수 있어요.</p>
           </div>
-          <button aria-label="닫기" onClick={onClose} type="button">
-            <X size={20} />
-          </button>
+          <SheetCloseButton onClose={onClose} />
         </div>
         <div className="invite-role-options">
           {inviteDisplayNameOptions.map((option) => (
@@ -5696,9 +5772,7 @@ function InviteLinkSheet({
               {invitedDisplayName ? ` 이 링크는 ${invitedDisplayName} 초대용이에요.` : ""}
             </p>
           </div>
-          <button aria-label="닫기" onClick={onClose} type="button">
-            <X size={20} />
-          </button>
+          <SheetCloseButton onClose={onClose} />
         </div>
         <div className="invite-link-card">
           <span>{invitedDisplayName ? `${invitedDisplayName} 초대 링크` : "초대 링크"}</span>
@@ -5802,9 +5876,7 @@ function TodoEditorSheet({
             <h2>{mode === "edit" ? "준비물 수정" : "준비물 추가"}</h2>
             <p>내용을 직접 고치고 저장할 수 있어요.</p>
           </div>
-          <button aria-label="닫기" onClick={onClose} type="button">
-            <X size={20} />
-          </button>
+          <SheetCloseButton onClose={onClose} />
         </div>
         <form className="todo-editor-form" onSubmit={submit}>
           <label>
@@ -5928,9 +6000,7 @@ function EventEditorSheet({
             <h2>이번 주 일정 추가</h2>
             <p>상담, 행사, 체험학습 같은 일정을 직접 넣을 수 있어요.</p>
           </div>
-          <button aria-label="닫기" onClick={onClose} type="button">
-            <X size={20} />
-          </button>
+          <SheetCloseButton onClose={onClose} />
         </div>
         <form className="todo-editor-form" onSubmit={submit}>
           <label>
