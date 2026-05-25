@@ -2,9 +2,11 @@ import {
   appLogin,
   closeView,
   loadFullScreenAd,
+  requestNotificationAgreement,
   setIosSwipeGestureEnabled,
   showFullScreenAd,
   TossAds,
+  type NotificationAgreementResult,
 } from "@apps-in-toss/web-framework";
 import {
   AlertCircle,
@@ -91,6 +93,9 @@ type Screen =
 
 let hasInitializedTossAds = false;
 let tossAdsInitializePromise: Promise<void> | null = null;
+const APPS_IN_TOSS_NOTIFICATION_AGREEMENT_TEMPLATE_CODE = "kidsnoti-today-pending-items-v2";
+const APPS_IN_TOSS_NOTIFICATION_AGREEMENT_CONFIRMED_AT_KEY =
+  "alimjangssok.notifications.appsInTossAgreementConfirmedAt";
 
 function canUseTossAds() {
   try {
@@ -138,6 +143,63 @@ function canUseFullScreenAd() {
   } catch {
     return false;
   }
+}
+
+function requestAppsInTossNotificationAgreement(): Promise<NotificationAgreementResult | "local-dev-skipped"> {
+  return new Promise((resolve, reject) => {
+    if (typeof window === "undefined") {
+      resolve("local-dev-skipped");
+      return;
+    }
+
+    let cleanup: (() => void) | null = null;
+    const finish = (callback: () => void) => {
+      try {
+        cleanup?.();
+      } catch {
+        // 앱 브릿지 콜백 해제 실패는 동의 플로우 결과에 영향을 주지 않습니다.
+      } finally {
+        cleanup = null;
+      }
+      callback();
+    };
+
+    try {
+      cleanup = requestNotificationAgreement({
+        options: {
+          templateCode: APPS_IN_TOSS_NOTIFICATION_AGREEMENT_TEMPLATE_CODE,
+        },
+        onEvent: (result) => {
+          finish(() => resolve(result.type));
+        },
+        onError: (error) => {
+          finish(() => reject(error));
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.includes("ReactNativeWebView") ||
+        message.includes("browser environment") ||
+        message.includes("not supported") ||
+        message.includes("is not a function")
+      ) {
+        resolve("local-dev-skipped");
+        return;
+      }
+      reject(error);
+    }
+  });
+}
+
+function hasConfirmedAppsInTossNotificationAgreement() {
+  if (typeof window === "undefined") return false;
+  return Boolean(window.localStorage.getItem(APPS_IN_TOSS_NOTIFICATION_AGREEMENT_CONFIRMED_AT_KEY));
+}
+
+function markAppsInTossNotificationAgreementConfirmed(confirmedAt: string) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(APPS_IN_TOSS_NOTIFICATION_AGREEMENT_CONFIRMED_AT_KEY, confirmedAt);
 }
 
 function runWithTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string) {
@@ -1057,7 +1119,9 @@ function shouldPromptForNotificationConsent(
     "consentStatus" | "consentLastPromptedAt" | "consentDeclinedAt"
   >,
 ) {
-  if (preferences.consentStatus === "accepted") return false;
+  if (preferences.consentStatus === "accepted") {
+    return !hasConfirmedAppsInTossNotificationAgreement();
+  }
 
   const lastPromptedAt = preferences.consentDeclinedAt ?? preferences.consentLastPromptedAt;
   if (!lastPromptedAt) return true;
@@ -2458,24 +2522,35 @@ function App() {
   };
 
   const acceptNotificationConsentPrompt = async () => {
-    const now = new Date().toISOString();
-    const next = {
-      ...notificationConsentDraft,
-      enabled: true,
-      scheduleEnabled: true,
-      consentStatus: "accepted" as const,
-      consentLastPromptedAt: now,
-      consentAcceptedAt: now,
-      consentDeclinedAt: undefined,
-    };
-
     setIsSubmittingNotificationConsent(true);
     setNotificationConsentMessage(null);
 
     try {
+      const agreementResult = await requestAppsInTossNotificationAgreement();
+      if (agreementResult === "agreementRejected") {
+        setNotificationConsentMessage("토스 알림 동의가 완료되어야 실제 알림을 받을 수 있어요.");
+        return;
+      }
+
+      const now = new Date().toISOString();
+      markAppsInTossNotificationAgreementConfirmed(now);
+      const next = {
+        ...notificationConsentDraft,
+        enabled: true,
+        scheduleEnabled: true,
+        consentStatus: "accepted" as const,
+        consentLastPromptedAt: now,
+        consentAcceptedAt: now,
+        consentDeclinedAt: undefined,
+      };
+
       await updateNotificationConsentPreferenceState(next);
       setNotificationConsentPromptSource(null);
-      setNotificationConsentMessage("준비물과 일정 알림을 켰어요.");
+      setNotificationConsentMessage(
+        agreementResult === "local-dev-skipped"
+          ? "로컬에서는 토스 알림 동의 화면을 건너뛰고 설정을 저장했어요."
+          : "토스 알림 동의와 앱 알림 설정을 완료했어요.",
+      );
       if (!tossUserKey) {
         setScreen("notifications");
         await connectTossLogin({
@@ -5083,6 +5158,7 @@ function NotificationsScreen({
   const [isSavingNotificationPrefs, setIsSavingNotificationPrefs] = useState(false);
   const [notificationSyncMessage, setNotificationSyncMessage] = useState<string | null>(null);
   const isTossLoginConnected = Boolean(tossUserKey);
+  const hasRequestedAgreementPromptRef = useRef(false);
 
   useEffect(() => {
     setNotificationsEnabled(consentSnapshot.enabled);
@@ -5093,6 +5169,36 @@ function NotificationsScreen({
     setScheduleDay(consentSnapshot.scheduleDay);
     setScheduleTime(consentSnapshot.scheduleTime);
   }, [consentSnapshot]);
+
+  useEffect(() => {
+    if (hasRequestedAgreementPromptRef.current) return;
+    if (!isTossLoginConnected) return;
+    if (!notificationsEnabled && !scheduleEnabled) return;
+    if (!shouldPromptForNotificationConsent(consentSnapshot)) return;
+
+    hasRequestedAgreementPromptRef.current = true;
+    onRequestConsentPrompt({
+      ...consentSnapshot,
+      enabled: true,
+      preparationDay,
+      preparationTime,
+      morningTime,
+      scheduleEnabled: true,
+      scheduleDay,
+      scheduleTime,
+    });
+  }, [
+    consentSnapshot,
+    isTossLoginConnected,
+    morningTime,
+    notificationsEnabled,
+    onRequestConsentPrompt,
+    preparationDay,
+    preparationTime,
+    scheduleDay,
+    scheduleEnabled,
+    scheduleTime,
+  ]);
 
   useEffect(() => {
     let ignore = false;
@@ -5162,17 +5268,6 @@ function NotificationsScreen({
       scheduleDay: next.scheduleDay ?? scheduleDay,
       scheduleTime: next.scheduleTime ?? scheduleTime,
     };
-    const now = new Date().toISOString();
-    const shouldAcceptNotificationConsent = merged.enabled && consentSnapshot.consentStatus !== "accepted";
-    const consentPatch =
-      shouldAcceptNotificationConsent
-        ? {
-            consentStatus: "accepted" as const,
-            consentLastPromptedAt: now,
-            consentAcceptedAt: now,
-            consentDeclinedAt: undefined,
-          }
-        : {};
 
     setNotificationsEnabled(merged.enabled);
     setPreparationDay(merged.preparationDay);
@@ -5184,12 +5279,10 @@ function NotificationsScreen({
     persistLocalNotificationPreferenceState({
       ...consentSnapshot,
       ...merged,
-      ...consentPatch,
     });
     onSnapshotUpdated({
       ...consentSnapshot,
       ...merged,
-      ...consentPatch,
     });
     void trackBugEvent({
       eventType: "notification_settings_changed",
@@ -5215,8 +5308,6 @@ function NotificationsScreen({
         scheduleEnabled: merged.scheduleEnabled,
         scheduleDay: merged.scheduleDay,
         scheduleTime: merged.scheduleTime,
-        ...consentPatch,
-        consentDeclinedAt: shouldAcceptNotificationConsent ? null : undefined,
       });
 
       applyNotificationPreferences(saved);
