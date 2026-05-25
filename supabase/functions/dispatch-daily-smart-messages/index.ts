@@ -174,7 +174,7 @@ async function processDailyReminder(
           targetDate,
           triggerKind,
           templateSetCode,
-          status: deliveryResult.delivered ? "sent" : "skipped",
+          status: deliveryResult.delivered ? "sent" : "failed",
           requestPayload: payload,
           responseBody,
           errorMessage: deliveryResult.delivered ? undefined : deliveryResult.reason,
@@ -231,7 +231,7 @@ async function processDailyReminder(
         targetDate,
         triggerKind,
         templateSetCode,
-        status: deliveryResult.delivered ? "sent" : "skipped",
+        status: deliveryResult.delivered ? "sent" : "failed",
         requestPayload: payload,
         responseBody,
         errorMessage: deliveryResult.delivered ? undefined : deliveryResult.reason,
@@ -363,16 +363,17 @@ async function hasSentDailyReminder(
 ) {
   const { data, error } = await supabase
     .from("message_delivery_logs")
-    .select("id")
+    .select("id, response_body")
     .eq("user_id", userId)
     .eq("child_id", childId)
     .eq("trigger_kind", triggerKind)
     .eq("target_date", targetDate)
     .eq("status", "sent")
-    .limit(1);
+    .order("created_at", { ascending: false })
+    .limit(5);
 
   if (error) throw error;
-  return (data ?? []).length > 0;
+  return (data ?? []).some((log) => getSmartMessageDeliveryResult(log.response_body as SmartMessageResponse).delivered);
 }
 
 async function insertDailyDeliveryLog(
@@ -384,7 +385,7 @@ async function insertDailyDeliveryLog(
     targetDate: string;
     triggerKind: TriggerKind;
     templateSetCode: string;
-    status: "sent" | "skipped";
+    status: "sent" | "failed" | "skipped";
     requestPayload: Record<string, unknown>;
     responseBody?: Record<string, unknown>;
     errorMessage?: string;
@@ -453,13 +454,15 @@ function getSmartMessageDeliveryResult(body: SmartMessageResponse) {
     (success?.sentAlimtalkCount ?? 0) +
     (success?.sentFriendtalkCount ?? 0);
 
-  if ((success?.msgCount ?? 0) > 0 || deliveredCount > 0) {
+  if (deliveredCount > 0) {
     return { delivered: true, reason: undefined };
   }
 
   return {
     delivered: false,
-    reason: extractSmartMessageFailReason(body) ?? "smart_message_not_delivered",
+    reason:
+      extractSmartMessageFailReason(body) ??
+      `smart_message_not_delivered: msgCount=${success?.msgCount ?? 0}, deliveredCount=${deliveredCount}`,
   };
 }
 

@@ -383,13 +383,15 @@ function getSmartMessageDeliveryResult(body: SmartMessageResponse) {
     (success?.sentAlimtalkCount ?? 0) +
     (success?.sentFriendtalkCount ?? 0);
 
-  if ((success?.msgCount ?? 0) > 0 || deliveredCount > 0) {
+  if (deliveredCount > 0) {
     return { delivered: true, reason: undefined };
   }
 
   return {
     delivered: false,
-    reason: extractSmartMessageFailReason(body) ?? "smart_message_not_delivered",
+    reason:
+      extractSmartMessageFailReason(body) ??
+      `smart_message_not_delivered: msgCount=${success?.msgCount ?? 0}, deliveredCount=${deliveredCount}`,
   };
 }
 
