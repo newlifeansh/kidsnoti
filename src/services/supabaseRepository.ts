@@ -683,6 +683,65 @@ export async function createSupabaseCalendarEvent(
   return calendarEventRowToRecord(legacyResult.data);
 }
 
+export async function updateSupabaseCalendarEvent(
+  eventId: string,
+  input: SupabaseCalendarEventInput,
+): Promise<CalendarEventRecord> {
+  const session = await getSupabaseSession();
+  if (!session || !supabase) throw new Error("Supabase 로그인이 필요해요.");
+
+  const basePayload = {
+    child_id: input.childId || null,
+    title: input.title,
+    description: input.description ?? null,
+    event_date: toDateOrNull(input.date) ?? new Date().toISOString().slice(0, 10),
+    start_time: toTimeOrNull(input.startTime),
+    end_time: toTimeOrNull(input.endTime),
+    location: input.location ?? null,
+    reminder_at: input.reminderAt ?? null,
+    status: "pending",
+  };
+  const legacyPayload = {
+    child_id: basePayload.child_id,
+    title: basePayload.title,
+    event_date: basePayload.event_date,
+    start_time: basePayload.start_time,
+    status: basePayload.status,
+  };
+
+  const fullResult = await supabase
+    .from("calendar_events")
+    .update({
+      ...basePayload,
+      confidence: input.confidence ?? null,
+      needs_user_confirmation: input.needsUserConfirmation ?? false,
+      reason: input.reason ?? null,
+      google_event_id: null,
+      google_calendar_id: null,
+    })
+    .eq("id", eventId)
+    .select("*")
+    .single<CalendarEventRow>();
+
+  if (!fullResult.error) {
+    return calendarEventRowToRecord(fullResult.data);
+  }
+
+  if (!isLegacyCalendarEventSchemaError(fullResult.error)) {
+    throw fullResult.error;
+  }
+
+  const legacyResult = await supabase
+    .from("calendar_events")
+    .update(legacyPayload)
+    .eq("id", eventId)
+    .select("*")
+    .single<CalendarEventRow>();
+
+  if (legacyResult.error) throw legacyResult.error;
+  return calendarEventRowToRecord(legacyResult.data);
+}
+
 export async function archiveSupabaseCalendarEvent(eventId: string): Promise<void> {
   const session = await getSupabaseSession();
   if (!session || !supabase) throw new Error("Supabase 로그인이 필요해요.");

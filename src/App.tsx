@@ -60,6 +60,7 @@ import {
   subscribeSupabaseAuth,
   syncSupabaseTossUserKey,
   type SupabaseFamilyData,
+  updateSupabaseCalendarEvent,
   updateSupabaseChild,
   updateSupabaseTodo,
   updateSupabaseTodoStatus,
@@ -84,6 +85,7 @@ type Screen =
   | "analyzing"
   | "result"
   | "todo"
+  | "past-events"
   | "children"
   | "add-child"
   | "edit-child"
@@ -981,6 +983,35 @@ function getTodoDateBucket(dueDate: string): TodoDateBucket {
   return "later";
 }
 
+function parseCalendarEventDate(date: string) {
+  return parseTodoDueDate(date);
+}
+
+function isPastCalendarEvent(event: Pick<CalendarEventItem, "date">) {
+  const parsedDate = parseCalendarEventDate(event.date);
+  if (!parsedDate) return false;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return parsedDate < today;
+}
+
+function displayCalendarEventDate(date: string) {
+  const parsedDate = parseCalendarEventDate(date);
+  if (!parsedDate) return date || "날짜 미정";
+
+  return `${parsedDate.getFullYear()}-${String(parsedDate.getMonth() + 1).padStart(2, "0")}-${String(parsedDate.getDate()).padStart(2, "0")}`;
+}
+
+function normalizeCalendarEventDateInput(date: string) {
+  const parsedDate = parseCalendarEventDate(date);
+  return parsedDate ? getLocalDateKey(parsedDate) : getLocalDateKey(new Date());
+}
+
+function normalizeCalendarEventTimeInput(time: string | undefined) {
+  return time && /^\d{2}:\d{2}$/.test(time) ? time : "09:00";
+}
+
 function displayTodoDueDate(dueDate: string) {
   const bucket = getTodoDateBucket(dueDate);
   if (bucket === "today") return "오늘";
@@ -991,6 +1022,18 @@ function displayTodoDueDate(dueDate: string) {
   if (!parsedDate) return dueDate;
 
   return `${parsedDate.getMonth() + 1}월 ${parsedDate.getDate()}일`;
+}
+
+const TODO_DIRECT_DATE_VALUE = "__direct_date__";
+const TODO_DUE_DATE_OPTIONS: TossSelectOption[] = [
+  { label: "오늘", value: "오늘" },
+  { label: "내일", value: "내일" },
+  { label: "이번 주", value: "이번 주" },
+  { label: "날짜 직접 입력", value: TODO_DIRECT_DATE_VALUE },
+];
+
+function isDirectTodoDateValue(dueDate: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(dueDate) || dueDate === "날짜 미정";
 }
 
 function normalizeActionTodoDueDate(todo: Pick<TodoItem, "category" | "dueDate" | "detail" | "title">) {
@@ -1615,6 +1658,54 @@ function App() {
       return null;
     }
   }, []);
+
+  const refreshFamilyData = useCallback(async () => {
+    if (forceFirstVisitPreview || !isSupabaseConfigured) {
+      return;
+    }
+
+    try {
+      await connectAppsInTossUser();
+      const response = await getSupabaseFamilyData();
+
+      if (!response) {
+        return;
+      }
+
+      const hasLocalFamilyState = childrenRef.current.length > 0 || hasPersistedChildren;
+      if (!isDemoModeRequested() && response.children.length === 0 && hasLocalFamilyState) {
+        return;
+      }
+
+      applyFamilyResponse({
+        responseFamilyMembers: response.familyMembers,
+        responseChildren: response.children,
+        responseTodos: response.todos,
+        responseCalendarEvents: response.calendarEvents,
+        setFamilyMembers,
+        setChildren,
+        setTodos,
+        setCalendarEvents,
+      });
+
+      if (response.children.length > 0) {
+        setScreen((current) =>
+          ["onboarding", "onboarding-tips", "first-child"].includes(current) ? "home" : current,
+        );
+      }
+    } catch (error) {
+      trackAppEvent({
+        eventType: "family_refresh_failed",
+        severity: "warning",
+        step: "home.pull_to_refresh",
+        message: error instanceof Error ? error.message : "가족 데이터 새로고침에 실패했어요.",
+        metadata: {
+          error: serializeErrorForLog(error),
+        },
+      });
+      throw error;
+    }
+  }, [forceFirstVisitPreview, hasPersistedChildren, trackAppEvent]);
 
   useEffect(() => {
     window.scrollTo({ top: 0 });
@@ -2359,6 +2450,38 @@ function App() {
       .catch(() => undefined);
   };
 
+  const saveEvent = (event: CalendarEventItem) => {
+    setCalendarEvents((current) =>
+      current.map((item) => (item.id === event.id ? event : item)),
+    );
+
+    void updateSupabaseCalendarEvent(event.id, {
+      childId: event.childId,
+      title: event.title,
+      description: event.description,
+      date: event.date,
+      startTime: event.time,
+      location: event.location,
+      reminderAt: event.reminderAt,
+      confidence: event.confidence,
+      needsUserConfirmation: event.needsUserConfirmation,
+      reason: event.reason,
+    })
+      .then((updatedEvent) => {
+        setCalendarEvents((current) =>
+          current.map((item) =>
+            item.id === event.id
+              ? calendarEventRecordToItem(
+                  updatedEvent,
+                  new Map([[event.childId, event.childName]]),
+                )
+              : item,
+          ),
+        );
+      })
+      .catch(() => undefined);
+  };
+
   const deleteTodo = (id: string) => {
     void archiveSupabaseTodo(id).catch(() => undefined);
     setTodos((current) => current.filter((todo) => todo.id !== id));
@@ -2994,6 +3117,7 @@ function App() {
             onAddEvent={addEvent}
             onChangeChildAvatar={changeChildAvatar}
             onDeleteEvent={deleteCalendarEvent}
+            onSaveEvent={saveEvent}
             todos={todos}
             onAddTodo={addTodo}
             onDeleteTodo={deleteTodo}
@@ -3001,6 +3125,7 @@ function App() {
             onNavigate={setScreen}
             onSaveTodo={saveTodo}
             onToggleTodo={toggleTodo}
+            onRefresh={refreshFamilyData}
           />
         )}
         {effectiveScreen === "upload" && (
@@ -3035,6 +3160,15 @@ function App() {
             onDeleteTodo={deleteTodo}
             onSaveTodo={saveTodo}
             onToggleTodo={toggleTodo}
+          />
+        )}
+        {effectiveScreen === "past-events" && (
+          <PastEventsScreen
+            children={children}
+            events={calendarEvents}
+            onBack={navigateBackInApp}
+            onDeleteEvent={deleteCalendarEvent}
+            onSaveEvent={saveEvent}
           />
         )}
         {effectiveScreen === "children" && (
@@ -3324,10 +3458,12 @@ function HomeScreen({
   onChangeChildAvatar,
   onDeleteEvent,
   onEditChild,
+  onSaveEvent,
   todos,
   onAddTodo,
   onDeleteTodo,
   onNavigate,
+  onRefresh,
   onSaveTodo,
   onToggleTodo,
 }: {
@@ -3337,20 +3473,26 @@ function HomeScreen({
   onChangeChildAvatar: (childId: string, avatarId: string) => void;
   onDeleteEvent: (id: string) => void;
   onEditChild: (child: Child) => void;
+  onSaveEvent: (event: CalendarEventItem) => void;
   todos: TodoItem[];
   onAddTodo: (todo: Omit<TodoItem, "id" | "completed">) => void;
   onDeleteTodo: (id: string) => void;
   onNavigate: (screen: Screen) => void;
+  onRefresh: () => Promise<void>;
   onSaveTodo: (todo: TodoItem) => void;
   onToggleTodo: (id: string) => void;
 }) {
   const [selectedChild, setSelectedChild] = useState(children[0]?.id ?? "");
   const [editingTodo, setEditingTodo] = useState<TodoItem | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEventItem | null>(null);
+  const [editingEvent, setEditingEvent] = useState<CalendarEventItem | null>(null);
   const [isAddingTodo, setIsAddingTodo] = useState(false);
   const [isAddingEvent, setIsAddingEvent] = useState(false);
   const [isAvatarPickerOpen, setIsAvatarPickerOpen] = useState(false);
   const [showHomeShortcutSheet, setShowHomeShortcutSheet] = useState(false);
+  const [pullDistance, setPullDistance] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const pullStartYRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!selectedChild && children[0]) {
@@ -3374,14 +3516,13 @@ function HomeScreen({
   const tomorrowTodos = filteredTodos.filter((todo) => getTodoDateBucket(todo.dueDate) === "tomorrow");
   const weekTodos = filteredTodos.filter((todo) => getTodoDateBucket(todo.dueDate) === "week");
   const laterTodos = filteredTodos.filter((todo) => getTodoDateBucket(todo.dueDate) === "later");
-  const pastTodos = filteredTodos.filter((todo) => getTodoDateBucket(todo.dueDate) === "past");
   const unscheduledTodos = filteredTodos.filter(
     (todo) => getTodoDateBucket(todo.dueDate) === "unscheduled",
   );
   const followUpTodos = filteredTodos.filter((todo) => {
     if (todo.completed) return false;
     const bucket = getTodoDateBucket(todo.dueDate);
-    return bucket === "week" || bucket === "later" || bucket === "unscheduled" || bucket === "past";
+    return bucket === "week" || bucket === "later" || bucket === "unscheduled";
   });
   const hasTodayPending = todayTodos.some((todo) => !todo.completed);
   const hasTomorrowPending = tomorrowTodos.some((todo) => !todo.completed);
@@ -3395,6 +3536,8 @@ function HomeScreen({
   const filteredEvents = currentChild
     ? events.filter((event) => event.childId === currentChild.id)
     : events;
+  const upcomingEvents = filteredEvents.filter((event) => !isPastCalendarEvent(event));
+  const pastEvents = filteredEvents.filter(isPastCalendarEvent);
   const closeHomeShortcutSheet = () => {
     setShowHomeShortcutSheet(false);
   };
@@ -3402,9 +3545,64 @@ function HomeScreen({
     window.localStorage.setItem(HOME_SHORTCUT_PROMPT_DISMISSED_KEY, "true");
     setShowHomeShortcutSheet(false);
   };
+  const beginPullRefresh = (event: React.TouchEvent<HTMLElement>) => {
+    if (window.scrollY > 0 || isRefreshing) {
+      pullStartYRef.current = null;
+      return;
+    }
+
+    pullStartYRef.current = event.touches[0]?.clientY ?? null;
+  };
+  const movePullRefresh = (event: React.TouchEvent<HTMLElement>) => {
+    if (pullStartYRef.current === null || isRefreshing) return;
+
+    const currentY = event.touches[0]?.clientY ?? pullStartYRef.current;
+    const nextDistance = Math.max(0, currentY - pullStartYRef.current);
+    if (nextDistance <= 0) return;
+
+    const dampedDistance = Math.min(88, Math.round(nextDistance * 0.45));
+    setPullDistance(dampedDistance);
+
+    if (dampedDistance > 12 && event.cancelable) {
+      event.preventDefault();
+    }
+  };
+  const endPullRefresh = () => {
+    const shouldRefresh = pullDistance >= 64;
+    pullStartYRef.current = null;
+
+    if (!shouldRefresh) {
+      setPullDistance(0);
+      return;
+    }
+
+    setIsRefreshing(true);
+    setPullDistance(72);
+    void onRefresh()
+      .catch(() => undefined)
+      .finally(() => {
+        setIsRefreshing(false);
+        setPullDistance(0);
+      });
+  };
 
   return (
-    <section className="page-stack assistant-home">
+    <section
+      className="page-stack assistant-home"
+      onTouchCancel={endPullRefresh}
+      onTouchEnd={endPullRefresh}
+      onTouchMove={movePullRefresh}
+      onTouchStart={beginPullRefresh}
+    >
+      {(pullDistance > 0 || isRefreshing) ? (
+        <div
+          className={isRefreshing ? "pull-refresh-indicator refreshing" : "pull-refresh-indicator"}
+          style={{ transform: `translateY(${Math.max(0, pullDistance - 46)}px)` }}
+        >
+          <RefreshCw size={17} />
+          <span>{isRefreshing ? "새로고침 중..." : pullDistance >= 64 ? "놓으면 새로고침" : "아래로 당겨 새로고침"}</span>
+        </div>
+      ) : null}
       <div className="child-rail" aria-label="자녀 선택">
         {children.map((child) => (
           <button
@@ -3575,19 +3773,6 @@ function HomeScreen({
         </Card>
       ) : null}
 
-      {pastTodos.length > 0 ? (
-        <Card title="지난 할 일" count={pastTodos.length}>
-          {pastTodos.map((todo) => (
-            <TodoCheckRow
-              key={todo.id}
-              todo={todo}
-              onEditTodo={setEditingTodo}
-              onToggleTodo={onToggleTodo}
-            />
-          ))}
-        </Card>
-      ) : null}
-
       {unscheduledTodos.length > 0 ? (
         <Card title="날짜 미정" count={unscheduledTodos.length}>
           {unscheduledTodos.map((todo) => (
@@ -3603,7 +3788,7 @@ function HomeScreen({
 
       <Card
         title="다가오는 일정"
-        count={filteredEvents.length}
+        count={upcomingEvents.length}
         action={
           currentChild ? (
             <button
@@ -3617,7 +3802,7 @@ function HomeScreen({
           ) : null
         }
       >
-        {filteredEvents.length > 0 ? filteredEvents.map((event) => (
+        {upcomingEvents.length > 0 ? upcomingEvents.map((event) => (
           <button
             className="event-row checklist-row event-row-button"
             key={event.id}
@@ -3630,12 +3815,26 @@ function HomeScreen({
             <div className="row-copy">
               <strong>{event.title}</strong>
               <span>
-                {event.date} · {event.time} · {event.childName}
+                {displayCalendarEventDate(event.date)} · {event.time} · {event.childName}
               </span>
             </div>
           </button>
         )) : <EmptyState text="등록된 일정이 아직 없어요." />}
       </Card>
+
+      {pastEvents.length > 0 ? (
+        <button className="setting-link past-events-link" onClick={() => onNavigate("past-events")} type="button">
+          <div className="setting-link-icon">
+            <CalendarCuteIcon size={22} />
+          </div>
+          <span>
+            <strong>지난 일정 모아보기</strong>
+            <small>어제까지의 일정 {pastEvents.length}개</small>
+          </span>
+          <ChevronRight size={22} />
+        </button>
+      ) : null}
+
       {(editingTodo || isAddingTodo) && currentChild ? (
         <TodoEditorSheet
           children={children}
@@ -3664,11 +3863,14 @@ function HomeScreen({
         <EventEditorSheet
           children={children}
           defaultChildId={currentChild.id}
+          mode="add"
+          event={null}
           onAddEvent={(event) => {
             onAddEvent(event);
             setIsAddingEvent(false);
           }}
           onClose={() => setIsAddingEvent(false)}
+          onSaveEvent={() => undefined}
         />
       ) : null}
       {selectedEvent ? (
@@ -3678,6 +3880,24 @@ function HomeScreen({
           onDelete={() => {
             onDeleteEvent(selectedEvent.id);
             setSelectedEvent(null);
+          }}
+          onEdit={() => {
+            setEditingEvent(selectedEvent);
+            setSelectedEvent(null);
+          }}
+        />
+      ) : null}
+      {editingEvent ? (
+        <EventEditorSheet
+          children={children}
+          defaultChildId={editingEvent.childId}
+          mode="edit"
+          event={editingEvent}
+          onAddEvent={() => undefined}
+          onClose={() => setEditingEvent(null)}
+          onSaveEvent={(event) => {
+            onSaveEvent(event);
+            setEditingEvent(null);
           }}
         />
       ) : null}
@@ -4382,6 +4602,107 @@ function TodoScreen({
   );
 }
 
+function PastEventsScreen({
+  children,
+  events,
+  onBack,
+  onDeleteEvent,
+  onSaveEvent,
+}: {
+  children: Child[];
+  events: CalendarEventItem[];
+  onBack: () => void;
+  onDeleteEvent: (id: string) => void;
+  onSaveEvent: (event: CalendarEventItem) => void;
+}) {
+  const [selectedChild, setSelectedChild] = useState("all");
+  const [selectedEvent, setSelectedEvent] = useState<CalendarEventItem | null>(null);
+  const [editingEvent, setEditingEvent] = useState<CalendarEventItem | null>(null);
+  const pastEvents = events
+    .filter((event) => isPastCalendarEvent(event))
+    .filter((event) => selectedChild === "all" || event.childId === selectedChild)
+    .sort((left, right) => {
+      const leftDate = parseCalendarEventDate(left.date)?.getTime() ?? 0;
+      const rightDate = parseCalendarEventDate(right.date)?.getTime() ?? 0;
+      return rightDate - leftDate;
+    });
+  const defaultChildId = editingEvent?.childId ?? (selectedChild === "all" ? children[0]?.id : selectedChild) ?? "";
+
+  return (
+    <section className="page-stack past-events-screen">
+      <div className="page-title-row with-back">
+        <div className="page-title-leading">
+          <PageBackButton onBack={onBack} />
+          <div>
+            <h1>지난 일정</h1>
+            <p>어제까지의 일정만 모아서 확인하고 다시 수정할 수 있어요.</p>
+          </div>
+        </div>
+      </div>
+
+      <ChildFilter
+        children={children}
+        selectedChild={selectedChild}
+        onSelect={setSelectedChild}
+      />
+
+      <Card title="지난 일정 모아보기" count={pastEvents.length}>
+        {pastEvents.length > 0 ? (
+          pastEvents.map((event) => (
+            <button
+              className="event-row checklist-row event-row-button"
+              key={event.id}
+              onClick={() => setSelectedEvent(event)}
+              type="button"
+            >
+              <div aria-hidden="true" className="event-check-badge past">
+                <CalendarCuteIcon size={18} />
+              </div>
+              <div className="row-copy">
+                <strong>{event.title}</strong>
+                <span>
+                  {displayCalendarEventDate(event.date)} · {event.time} · {event.childName}
+                </span>
+              </div>
+            </button>
+          ))
+        ) : (
+          <EmptyState text="지난 일정이 아직 없어요." />
+        )}
+      </Card>
+
+      {selectedEvent ? (
+        <EventDetailSheet
+          event={selectedEvent}
+          onClose={() => setSelectedEvent(null)}
+          onDelete={() => {
+            onDeleteEvent(selectedEvent.id);
+            setSelectedEvent(null);
+          }}
+          onEdit={() => {
+            setEditingEvent(selectedEvent);
+            setSelectedEvent(null);
+          }}
+        />
+      ) : null}
+      {editingEvent ? (
+        <EventEditorSheet
+          children={children}
+          defaultChildId={defaultChildId}
+          event={editingEvent}
+          mode="edit"
+          onAddEvent={() => undefined}
+          onClose={() => setEditingEvent(null)}
+          onSaveEvent={(event) => {
+            onSaveEvent(event);
+            setEditingEvent(null);
+          }}
+        />
+      ) : null}
+    </section>
+  );
+}
+
 function ChildrenScreen({
   children,
   onBack,
@@ -5039,10 +5360,12 @@ function EventDetailSheet({
   event,
   onClose,
   onDelete,
+  onEdit,
 }: {
   event: CalendarEventItem;
   onClose: () => void;
   onDelete: () => void;
+  onEdit: () => void;
 }) {
   return (
     <div className="bottom-sheet-backdrop" role="presentation" onClick={onClose}>
@@ -5055,7 +5378,7 @@ function EventDetailSheet({
         <div className="sheet-header">
           <div>
             <h2>{event.title}</h2>
-            <p>일정 정보를 확인하고 필요하면 삭제할 수 있어요.</p>
+            <p>일정 정보를 확인하고 필요하면 수정할 수 있어요.</p>
           </div>
           <SheetCloseButton onClose={onClose} />
         </div>
@@ -5063,18 +5386,18 @@ function EventDetailSheet({
           <strong>{event.title}</strong>
           <div className="todo-detail-meta">
             <span>{event.childName}</span>
-            <span>{event.date}</span>
+            <span>{displayCalendarEventDate(event.date)}</span>
             <span>{event.time}</span>
             {event.location ? <span>{event.location}</span> : null}
           </div>
           <p>
             {event.location
-              ? `${event.childName} 일정이에요. ${event.date} ${event.time}에 ${event.location}에서 진행돼요.`
-              : `${event.childName} 일정이에요. ${event.date} ${event.time}에 진행돼요.`}
+              ? `${event.childName} 일정이에요. ${displayCalendarEventDate(event.date)} ${event.time}에 ${event.location}에서 진행돼요.`
+              : `${event.childName} 일정이에요. ${displayCalendarEventDate(event.date)} ${event.time}에 진행돼요.`}
           </p>
           <div className="sheet-actions">
-            <button className="secondary-action" onClick={onClose} type="button">
-              닫기
+            <button className="secondary-action" onClick={onEdit} type="button">
+              수정하기
             </button>
             <button className="danger-action" onClick={onDelete} type="button">
               삭제
@@ -5928,7 +6251,12 @@ function TodoEditorSheet({
   const [dueDate, setDueDate] = useState(todo?.dueDate ?? "오늘");
   const [detail, setDetail] = useState(todo?.detail ?? "");
   const selectedChild = children.find((child) => child.id === childId) ?? children[0];
-  const canSubmit = title.trim().length > 0 && Boolean(selectedChild);
+  const dateSelectValue = isDirectTodoDateValue(dueDate) ? TODO_DIRECT_DATE_VALUE : dueDate;
+  const customDueDate = /^\d{4}-\d{2}-\d{2}$/.test(dueDate) ? dueDate : "";
+  const canSubmit =
+    title.trim().length > 0 &&
+    Boolean(selectedChild) &&
+    (dateSelectValue !== TODO_DIRECT_DATE_VALUE || customDueDate.length > 0);
 
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -6007,13 +6335,24 @@ function TodoEditorSheet({
               <span>날짜</span>
               <TossSelect
                 label="날짜"
-                onChange={setDueDate}
-                options={["오늘", "내일", "이번 주", "날짜 미정"].map((item) => ({
-                  label: item,
-                  value: item,
-                }))}
-                value={dueDate}
+                onChange={(value) => {
+                  if (value === TODO_DIRECT_DATE_VALUE) {
+                    setDueDate(customDueDate || getLocalDateKey(new Date()));
+                    return;
+                  }
+                  setDueDate(value);
+                }}
+                options={TODO_DUE_DATE_OPTIONS}
+                value={dateSelectValue}
               />
+              {dateSelectValue === TODO_DIRECT_DATE_VALUE ? (
+                <input
+                  aria-label="날짜 직접 입력"
+                  onChange={(event) => setDueDate(event.target.value || "날짜 미정")}
+                  type="date"
+                  value={customDueDate}
+                />
+              ) : null}
             </label>
           </div>
           <label>
@@ -6048,48 +6387,72 @@ function TodoEditorSheet({
 function EventEditorSheet({
   children,
   defaultChildId,
+  event,
+  mode = "add",
   onAddEvent,
   onClose,
+  onSaveEvent,
 }: {
   children: Child[];
   defaultChildId: string;
+  event?: CalendarEventItem | null;
+  mode?: "add" | "edit";
   onAddEvent: (event: Omit<CalendarEventItem, "id">) => void;
   onClose: () => void;
+  onSaveEvent?: (event: CalendarEventItem) => void;
 }) {
-  const [childId, setChildId] = useState(defaultChildId);
-  const [title, setTitle] = useState("");
-  const [date, setDate] = useState(getLocalDateKey(new Date()));
-  const [time, setTime] = useState("09:00");
-  const [location, setLocation] = useState("");
+  const [childId, setChildId] = useState(event?.childId ?? defaultChildId);
+  const [title, setTitle] = useState(event?.title ?? "");
+  const [date, setDate] = useState(
+    event ? normalizeCalendarEventDateInput(event.date) : getLocalDateKey(new Date()),
+  );
+  const [time, setTime] = useState(normalizeCalendarEventTimeInput(event?.time));
+  const [location, setLocation] = useState(event?.location ?? "");
   const selectedChild = children.find((child) => child.id === childId) ?? children[0];
   const canSubmit = title.trim().length > 0 && Boolean(selectedChild);
+  const editorEvent = event;
+  const isEditing = mode === "edit" && Boolean(editorEvent);
 
-  const submit = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const submit = (submitEvent: React.FormEvent<HTMLFormElement>) => {
+    submitEvent.preventDefault();
     if (!canSubmit || !selectedChild) return;
 
-    onAddEvent({
+    const payload = {
       childId: selectedChild.id,
       childName: selectedChild.name,
       title: title.trim(),
       date,
       time,
       location: location.trim() || undefined,
-    });
+    };
+
+    if (isEditing && editorEvent && onSaveEvent) {
+      onSaveEvent({
+        ...editorEvent,
+        ...payload,
+      });
+      return;
+    }
+
+    onAddEvent(payload);
   };
 
   return (
     <div className="bottom-sheet-backdrop" role="presentation" onClick={onClose}>
       <section
-        aria-label="일정 추가"
+        aria-label={isEditing ? "일정 수정" : "일정 추가"}
         className="bottom-sheet"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="sheet-handle" aria-hidden="true" />
         <div className="sheet-header">
           <div>
-            <h2>이번 주 일정 추가</h2>
-            <p>상담, 행사, 체험학습 같은 일정을 직접 넣을 수 있어요.</p>
+            <h2>{isEditing ? "일정 수정" : "다가오는 일정 추가"}</h2>
+            <p>
+              {isEditing
+                ? "날짜를 오늘 이후로 바꾸면 홈의 다가오는 일정으로 다시 보여요."
+                : "상담, 행사, 체험학습 같은 일정을 직접 넣을 수 있어요."}
+            </p>
           </div>
           <SheetCloseButton onClose={onClose} />
         </div>
@@ -6137,7 +6500,7 @@ function EventEditorSheet({
               취소
             </button>
             <button className="primary-action" disabled={!canSubmit} type="submit">
-              일정 추가
+              {isEditing ? "저장" : "일정 추가"}
             </button>
           </div>
         </form>

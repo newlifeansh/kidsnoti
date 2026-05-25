@@ -1,6 +1,6 @@
 # PROJECT
 
-마지막 업데이트: `2026-05-16 21:48:13 KST`
+마지막 업데이트: `2026-05-25 17:05:00 KST`
 
 ## 프로젝트 개요
 
@@ -29,6 +29,8 @@
 - 업로드 파일 최대 `3개` 제한
 - 원본 이미지/PDF는 장기 저장하지 않음
 - Supabase 기반 저장/가족/초대/아이/알림 설정 흐름 연결 완료
+- Apps in Toss 토스 로그인/userKey 동기화 흐름 연결 완료
+- Apps in Toss 공식 알림 동의 `requestNotificationAgreement` 연결 완료
 - 가족 초대 백엔드 RPC 실동작 확인 완료
 - 가족 초대 관계 지정 UX 반영 완료
 - 버그 이벤트 수집, 버그 현황 화면, Google Sheets export 자동화 연결 완료
@@ -259,10 +261,24 @@
 
 ### 현재 실제 발송 상태
 
-- 실제 Smart Message 운영 발송은 아직 `OFF`
-- 이유:
-  - 토스 템플릿 심사 승인 대기
-  - secret 최종 연결 전 단계
+- Smart Message 발송 함수는 운영 배포되어 주기 실행/수동 실행 로그 확인 완료
+- 알림 미발송 원인 분석 결과:
+  - Supabase 스케줄러/함수 실행 문제는 아님
+  - `message_delivery_logs`에서 Toss 응답 `TERMS_DISAGREED_MEMBER` 확인
+  - 원인: 앱 내부 Supabase에는 `consent_status=accepted`가 저장됐지만, Toss 공식 알림 동의가 완료되지 않아 Toss가 수신자를 미동의 사용자로 판단
+- 2026-05-25 수정 완료:
+  - 프론트에서 알림 동의 수락 시 Apps in Toss SDK `requestNotificationAgreement`를 먼저 호출
+  - 사용자가 Toss 공식 동의를 완료한 뒤에만 Supabase `notification_preferences.consent_status=accepted` 저장
+  - 설정 저장 로직이 동의 상태를 몰래 `accepted`로 바꾸던 경로 제거
+  - 기존에 Supabase만 `accepted`였던 사용자는 로컬 Toss 동의 완료 마커가 없으면 알림 설정 진입 시 동의 플로우를 다시 띄움
+  - 로컬 브라우저에서는 Toss 앱 브릿지가 없으므로 동의 플로우를 개발용으로만 skip 처리
+- 최근 서버 측 보정:
+  - Toss 응답의 `resultType=SUCCESS`만 보고 성공 처리하지 않고 실제 delivered channel count 기준으로 성공 판단
+  - delivered count가 0인 과거 `sent` 로그는 dedupe 기준에서 제외
+  - 알림 시간은 설정 시각 이후 `0~10분` 윈도우에서만 발송하도록 보정
+- 운영 확인 기준:
+  - 새 `.ait` 업로드 후 실제 Toss 앱에서 알림 동의를 다시 완료해야 함
+  - 이후에도 미발송이면 `message_delivery_logs`의 `error_message`, `response_body`에서 Toss 거절 사유를 우선 확인
 
 ## 버그 트래킹 / 운영 모니터링 상태
 
@@ -345,8 +361,20 @@
 
 현재 상태:
 
-- 6개 모두 콘솔에서 `검토 중`
-- 각 상세 화면에서 `검토를 요청했어요` 토스트와 `검토 중이에요` 상태 확인 완료
+- 2026-05-25 기준 v2 기능성 캠페인 승인 상태 확인
+- 확인된 v2 발송 코드:
+  - `kidsnoti-today-pending-items-v2`
+  - `kidsnoti-today-all-checked-v2`
+  - `kidsnoti-today-empty-v2`
+  - `kidsnoti-tomorrow-pending-items-v2`
+  - `kidsnoti-tomorrow-all-checked-v2`
+  - `kidsnoti-tomorrow-empty-v2`
+  - `kidsnoti-today-schedule-reminder-v2`
+  - `kidsnoti-tomorrow-schedule-reminder-v2`
+- 알림 동의 SDK 호출 기준 templateCode:
+  - `kidsnoti-today-pending-items-v2`
+- Apps in Toss 콘솔에서 기존 알림동의문은 `연결된 템플릿이 없어요` 상태로 보였음
+  - 따라서 앱 측 공식 동의 API 호출을 추가해 Toss 회원 동의 상태를 실제로 만들도록 수정
 
 ## 원격 Supabase 진행 상태
 
@@ -354,7 +382,8 @@
 - Edge Function 배포 진행함
 - 신규 일일 평가 함수 배포 진행함
 - `sync-toss-user-key` 흐름 준비됨
-- 알림 연동은 `연동 준비 완료 / 실제 발송 비활성화` 상태
+- 알림 연동은 함수/secret/로그 기준 운영 발송 경로까지 연결됨
+- 2026-05-25 기준 마지막 주요 이슈는 Toss 공식 알림 동의 누락이었고, 프론트 SDK 호출로 보정 완료
 - `analyze-notice` / `dispatch-push` / `dispatch-daily-smart-messages` / `export-bug-events-to-sheet` 계열 운영 준비
 - 저장 관련 컬럼 누락 이슈(`toss_user_hash`, `toss_user_key`) 정리 완료
 - 가족 초대 관계 지정 확장 SQL은 로컬 파일 반영 완료, 원격 DB 마이그레이션은 아직 필요
@@ -459,6 +488,7 @@
 
 - `npx tsc --noEmit` 통과
 - `npm run build` 통과
+- `npm run lint` 통과
 - `.ait` 빌드 완료
 - 여러 UI 수정은 브라우저에서 반복 확인
 - Apps in Toss 콘솔:
@@ -475,6 +505,42 @@
   - 결과 확인 성공
   - 저장 후 홈 복귀 성공
   - 알림 동의 저장 성공
+
+## 2026-05-25 알림 미발송 원인 분석 / 수정 메모
+
+- 사용자 제보:
+  - 당일 리마인드 시간을 맞춰도 알림이 오지 않음
+  - 설정 화면에서 연결 성공처럼 보여도 실제 발송이 실패
+- Supabase 확인 결과:
+  - `notification_preferences`에는 `enabled=true`, `consent_status=accepted`, `toss_user_key` 존재
+  - `dispatch-daily-smart-messages` 실행 로그 및 `message_delivery_logs` 생성 확인
+  - Toss API 응답은 HTTP/처리 레벨에서는 성공이지만 delivery count가 모두 0
+  - 실패 사유는 `TERMS_DISAGREED_MEMBER`
+- Toss 콘솔 확인 결과:
+  - v2 기능성 캠페인 발송 코드는 승인 상태
+  - 기존 알림동의문 상세에서 연결 템플릿 없음으로 표시
+  - 승인된 캠페인은 콘솔에서 직접 수정 불가 상태
+- 코드 수정:
+  - `src/App.tsx`에서 `requestNotificationAgreement` import
+  - 알림 동의 수락 시 `requestNotificationAgreement({ templateCode: "kidsnoti-today-pending-items-v2" })` 호출
+  - 결과가 `newAgreement` 또는 `alreadyAgreed`일 때만 앱 알림 설정 저장
+  - `agreementRejected`이면 Supabase consent를 accepted로 저장하지 않고 사용자에게 재동의 필요 안내
+  - 토스 공식 동의 완료 여부를 localStorage 마커로 보관
+  - 기존 accepted 사용자도 마커가 없으면 알림 설정 진입 시 동의 시트를 다시 노출
+  - 알림 설정 저장 로직에서는 더 이상 consent 상태를 자동 accepted로 변경하지 않음
+- QA:
+  - 로컬 브라우저에서 홈 -> 설정 -> 앱인토스 알림 설정 진입 확인
+  - `npm run lint` 통과
+  - `npm run build` 통과
+  - 새 번들 생성: `/tmp/kidsnoti-deploy-current/kidsnoti.ait`
+  - 빌드 시각: `2026-05-25 16:59:13 KST`
+  - GitHub main 커밋/푸시 완료: `3ebfe70 Connect Apps in Toss notification agreement`
+- 운영 재검증 방법:
+  - 새 `.ait`를 Apps in Toss 콘솔에 업로드
+  - 실제 Toss 앱에서 알림 설정 진입
+  - Toss 알림 동의 화면이 뜨는지 확인
+  - 동의 완료 후 10분 이내 테스트 알림 시간 설정
+  - `message_delivery_logs`에서 delivered count와 error_message 확인
 
 ## 2026-05-21 최종 QA / main 배포 메모
 
