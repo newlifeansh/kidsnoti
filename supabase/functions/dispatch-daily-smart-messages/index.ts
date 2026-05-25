@@ -506,7 +506,8 @@ function isTomorrowTrigger(triggerKind: TriggerKind) {
 function isWithinMatchWindow(targetTime: string, nowTime: string) {
   const targetMinutes = toMinutes(targetTime);
   const nowMinutes = toMinutes(nowTime);
-  return Math.abs(targetMinutes - nowMinutes) <= MATCH_WINDOW_MINUTES;
+  const elapsedMinutes = nowMinutes - targetMinutes;
+  return elapsedMinutes >= 0 && elapsedMinutes <= MATCH_WINDOW_MINUTES;
 }
 
 function toMinutes(value: string) {
